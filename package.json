@@ -1,0 +1,42 @@
+{
+  "name": "stremio-dl",
+  "version": "1.0.0",
+  "description": "CLI tool to batch download entire seasons from Stremio addons",
+  "type": "module",
+  "bin": {
+    "stremio-dl": "./bin.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "bin.js"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsup",
+    "start": "node dist/cli.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "@inquirer/prompts": "^7.5.0",
+    "listr2": "^8.2.5",
+    "ora": "^8.2.0",
+    "picocolors": "^1.1.1",
+    "conf": "^13.0.1"
+  },
+  "devDependencies": {
+    "tsup": "^8.4.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "@types/node": "^22.0.0"
+  }
+}
