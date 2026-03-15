@@ -498,6 +498,31 @@ async function handleTrigger(
   res.end();
 }
 
+// ── Self-Update ───────────────────────────────────────────────────────────
+
+async function handleSelfUpdate(res: ServerResponse): Promise<void> {
+  const os = process.platform;
+  const arch = process.arch === "arm64" ? "arm64" : "x64";
+
+  let script: string;
+  if (os === "darwin" || os === "linux") {
+    script = "curl -fsSL https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.sh | bash";
+  } else if (os === "win32") {
+    script = "powershell -ExecutionPolicy Bypass -Command \"irm https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.ps1 | iex\"";
+  } else {
+    return error(res, `Unsupported OS: ${os}`);
+  }
+
+  json(res, { updating: true, os, arch });
+
+  // Run update in background — this will kill the current process
+  setTimeout(() => {
+    exec(script, (err) => {
+      if (err) console.error(pc.red(`Update failed: ${err}`));
+    });
+  }, 500);
+}
+
 // UI assets — imported as text so bun compile embeds them
 import uiCss from "./ui/styles.css" with { type: "text" };
 import uiJs from "./ui/dist/index.js" with { type: "text" };
@@ -594,6 +619,8 @@ export function startServer(port: number, autoOpen = false): void {
         await handlePickFolder(res);
       } else if (method === "GET" && path === "/api/health") {
         json(res, { ok: true, version: APP_VERSION });
+      } else if (method === "POST" && path === "/api/update") {
+        await handleSelfUpdate(res);
       }
       // ── Fallback ────────────────────────────────────────────────────
       else {

@@ -1,5 +1,7 @@
 import { h } from "preact";
 import { memo } from "preact/compat";
+import { useState, useCallback } from "preact/hooks";
+import { api } from "../lib/api";
 import type { Tab } from "../types";
 
 interface TopbarProps {
@@ -17,6 +19,15 @@ function formatSpeed(mbps: number): string {
 }
 
 export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, globalSpeed, updateAvailable }: TopbarProps) {
+  const [updating, setUpdating] = useState(false);
+
+  const doUpdate = useCallback(async () => {
+    setUpdating(true);
+    try {
+      await api("POST", "/api/update");
+    } catch { /* server will die during update */ }
+  }, []);
+
   return (
     <div class="header">
       <div class="header-left">
@@ -28,14 +39,9 @@ export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, glob
           <span class="header-speed">{formatSpeed(globalSpeed)}</span>
         ) : null}
         {updateAvailable ? (
-          <a
-            class="header-update"
-            href="https://github.com/sickerine/stremio-dl/releases/latest"
-            target="_blank"
-            rel="noopener"
-          >
-            v{updateAvailable} available
-          </a>
+          <button class="header-update" onClick={doUpdate} disabled={updating}>
+            {updating ? "Updating..." : `Update to v${updateAvailable}`}
+          </button>
         ) : null}
       </div>
       <div class="nav">
