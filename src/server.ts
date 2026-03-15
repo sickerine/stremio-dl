@@ -441,11 +441,18 @@ async function handleAddonStream(id: string, type: "movie" | "series", port: num
       return;
     }
     json(res, {
-      streams: [{
-        name: "Stremio DL",
-        description: `Download Season ${season}`,
-        externalUrl: `${base}/?download=${imdbId}&season=${season}`,
-      }],
+      streams: [
+        {
+          name: "Stremio DL",
+          description: "Download Series",
+          externalUrl: `${base}/?download=${imdbId}&season=all`,
+        },
+        {
+          name: "Stremio DL",
+          description: `Download Season ${season}`,
+          externalUrl: `${base}/?download=${imdbId}&season=${season}`,
+        },
+      ],
     });
   }
 }

@@ -32,7 +32,8 @@ declare global {
 
 const initParams = new URLSearchParams(window.location.search);
 const INIT_DOWNLOAD_ID = initParams.get("download");
-const INIT_SEASON = parseInt(initParams.get("season") ?? "0", 10);
+const INIT_SEASON_RAW = initParams.get("season");
+const INIT_SEASON = INIT_SEASON_RAW === "all" ? 0 : parseInt(INIT_SEASON_RAW ?? "0", 10);
 const INIT_JOB_ID = initParams.get("job");
 if (INIT_DOWNLOAD_ID || INIT_JOB_ID) {
   window.history.replaceState({}, "", "/");
