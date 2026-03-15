@@ -21,11 +21,21 @@ Downloaded binaries are unsigned. Your OS will block them by default.
 
 ### macOS
 
-```sh
-# Remove quarantine flag (run once after downloading)
-xattr -cr ./stremio-dl-darwin-arm64
+**Option A — `.app` bundle (recommended)**
 
-# Then run it
+Download the `.app.zip` for your architecture (arm64 for Apple Silicon, x64 for Intel). Unzip it, then:
+
+```sh
+xattr -cr "Stremio DL.app"
+```
+
+Double-click to run. It launches as a background app (no Dock icon), starts the server, and opens your browser.
+
+**Option B — Raw binary**
+
+```sh
+xattr -cr ./stremio-dl-darwin-arm64
+chmod +x ./stremio-dl-darwin-arm64
 ./stremio-dl-darwin-arm64
 ```
 

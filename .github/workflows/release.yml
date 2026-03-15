@@ -47,8 +47,7 @@ jobs:
 
       - name: Compile standalone executable
         run: |
-          bun build --compile \
-            --minify \
+          bun build --compile --minify \
             --target=${{ matrix.target.bun-target }} \
             src/cli.ts \
             --outfile ${{ matrix.target.outfile }}
@@ -75,8 +74,7 @@ jobs:
         run: bun run build-ui.ts
 
       - name: Compile standalone executable
-        run: |
-          bun build --compile --minify --windows-icon assets/icon.ico src/cli.ts --outfile stremio-dl-windows-x64.exe
+        run: bun build --compile --minify --windows-icon assets/icon.ico src/cli.ts --outfile stremio-dl-windows-x64.exe
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -86,9 +84,75 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  bundle-macos:
+    name: Bundle macOS .app (${{ matrix.arch.name }})
+    needs: build-unix
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch:
+          - name: arm64
+            artifact: stremio-dl-darwin-arm64
+          - name: x64
+            artifact: stremio-dl-darwin-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download darwin binary
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.arch.artifact }}
+          path: bin
+
+      - name: Install icnsutils
+        run: sudo apt-get install -y icnsutils imagemagick
+
+      - name: Convert PNG to ICNS
+        run: |
+          for size in 16 32 48 128 256; do
+            convert assets/icon.png -resize ${size}x${size} icon_${size}.png
+          done
+          png2icns AppIcon.icns icon_16.png icon_32.png icon_48.png icon_128.png icon_256.png
+          rm -f icon_*.png
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "ver=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ver=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create .app bundle
+        run: |
+          APP="Stremio DL.app"
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources"
+
+          cp "bin/${{ matrix.arch.artifact }}" "$APP/Contents/MacOS/stremio-dl"
+          chmod +x "$APP/Contents/MacOS/stremio-dl"
+
+          cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+
+          VERSION="${{ steps.version.outputs.ver }}"
+          VERSION="${VERSION#v}"
+          sed "s/1.0.0/$VERSION/g" assets/Info.plist > "$APP/Contents/Info.plist"
+
+      - name: Zip .app bundle
+        run: zip -r "stremio-dl-darwin-${{ matrix.arch.name }}.app.zip" "Stremio DL.app"
+
+      - name: Upload .app artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stremio-dl-darwin-${{ matrix.arch.name }}.app.zip
+          path: stremio-dl-darwin-${{ matrix.arch.name }}.app.zip
+          if-no-files-found: error
+          retention-days: 1
+
   release:
     name: Create GitHub Release
-    needs: [build-unix, build-windows]
+    needs: [build-unix, build-windows, bundle-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -101,11 +165,20 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir -p release
+
+          # Raw binaries (Linux + Darwin CLI)
           for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
             cp "artifacts/stremio-dl-${target}/stremio-dl-${target}" "release/stremio-dl-${target}"
             chmod +x "release/stremio-dl-${target}"
           done
+
+          # Windows exe
           cp artifacts/stremio-dl-windows-x64.exe/stremio-dl-windows-x64.exe release/
+
+          # macOS .app bundles
+          for arch in arm64 x64; do
+            cp "artifacts/stremio-dl-darwin-${arch}.app.zip/stremio-dl-darwin-${arch}.app.zip" "release/"
+          done
 
       - name: Generate checksums
         run: |
