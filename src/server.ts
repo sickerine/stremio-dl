@@ -7,9 +7,8 @@ import { resolveDownloadPlan, resolveMovieDownloadPlan, formatPlanSummary } from
 import type { SeriesMeta, MovieMeta } from "./types.js";
 import { executeDownload, resolveFileSize, type DownloadBackend } from "./core/downloader.js";
 import { config } from "./config.js";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const APP_VERSION: string = (require("../package.json") as { version: string }).version;
+import pkgJson from "../package.json" with { type: "json" };
+const APP_VERSION: string = pkgJson.version;
 
 // ── Job Management ─────────────────────────────────────────────────────────
 

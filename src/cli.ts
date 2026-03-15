@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { exec } from "node:child_process";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const PKG_VERSION: string = (require("../package.json") as { version: string }).version;
+import pkgJson from "../package.json" with { type: "json" };
+const PKG_VERSION: string = pkgJson.version;
 import { searchCommand } from "./commands/search.js";
 import { downloadCommand } from "./commands/download.js";
 import { configCommand } from "./commands/config-cmd.js";
