@@ -26,9 +26,9 @@
     "build:win": "bun run build:ui && bun build --compile src/cli.ts --outfile stremio-dl-win.exe --target=bun-windows-x64",
     "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit",
-    "version:patch": "npm version patch --no-git-tag-version && git add package.json && git commit -m \"v$(node -p require('./package.json').version)\" && git tag v$(node -p require('./package.json').version)",
-    "version:minor": "npm version minor --no-git-tag-version && git add package.json && git commit -m \"v$(node -p require('./package.json').version)\" && git tag v$(node -p require('./package.json').version)",
-    "version:major": "npm version major --no-git-tag-version && git add package.json && git commit -m \"v$(node -p require('./package.json').version)\" && git tag v$(node -p require('./package.json').version)",
+    "version:patch": "npm version patch --no-git-tag-version && VER=$(node -e 'process.stdout.write(require(\"./package.json\").version)') && git add package.json && git commit -m \"v$VER\" && git tag \"v$VER\"",
+    "version:minor": "npm version minor --no-git-tag-version && VER=$(node -e 'process.stdout.write(require(\"./package.json\").version)') && git add package.json && git commit -m \"v$VER\" && git tag \"v$VER\"",
+    "version:major": "npm version major --no-git-tag-version && VER=$(node -e 'process.stdout.write(require(\"./package.json\").version)') && git add package.json && git commit -m \"v$VER\" && git tag \"v$VER\"",
     "release": "git push origin main && git push origin --tags"
   },
   "dependencies": {
