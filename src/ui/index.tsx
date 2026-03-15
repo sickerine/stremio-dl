@@ -14,6 +14,7 @@ import type { Tab, Job, SearchResult, SeriesMeta } from "./types";
 declare global {
   interface Window {
     __PORT__: number;
+    __VERSION__: string;
   }
 }
 

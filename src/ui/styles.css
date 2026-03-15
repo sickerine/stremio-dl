@@ -67,7 +67,12 @@ body {
 .header-brand span {
     color: var(--accent);
 }
-.header-left { display: flex; align-items: center; gap: 16px; }
+.header-left { display: flex; align-items: center; gap: 12px; }
+.header-version {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px; color: var(--text-dim);
+    letter-spacing: 0.04em;
+}
 .header-speed {
     font-family: 'JetBrains Mono', monospace;
     font-size: 12px; font-weight: 700;

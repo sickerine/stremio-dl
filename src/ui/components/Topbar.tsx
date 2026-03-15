@@ -22,6 +22,7 @@ export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, glob
         <button class="header-brand" onClick={() => onTabChange("home")} style="cursor:pointer;background:none;border:none">
           Stremio<span>/</span>DL
         </button>
+        <span class="header-version">v{window.__VERSION__}</span>
         {globalSpeed > 0 ? (
           <span class="header-speed">{formatSpeed(globalSpeed)}</span>
         ) : null}

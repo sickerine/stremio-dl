@@ -7,6 +7,9 @@ import { resolveDownloadPlan, resolveMovieDownloadPlan, formatPlanSummary } from
 import type { SeriesMeta, MovieMeta } from "./types.js";
 import { executeDownload, resolveFileSize, type DownloadBackend } from "./core/downloader.js";
 import { config } from "./config.js";
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const APP_VERSION: string = (require("../package.json") as { version: string }).version;
 
 // ── Job Management ─────────────────────────────────────────────────────────
 
@@ -395,7 +398,7 @@ async function handlePickFolder(res: ServerResponse): Promise<void> {
 function handleManifest(_port: number, res: ServerResponse): void {
   json(res, {
     id: "com.stremiodl.downloader",
-    version: "1.0.0",
+    version: APP_VERSION,
     name: "Stremio Downloader",
     description: "Download entire seasons to your computer",
     resources: [
@@ -512,7 +515,7 @@ function handleAppPage(port: number, res: ServerResponse): void {
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>${css}</style></head><body>
 <div id="app"></div>
-<script>window.__PORT__=${port};</script>
+<script>window.__PORT__=${port};window.__VERSION__="${APP_VERSION}";</script>
 <script>${js}</script>
 </body></html>`);
 }
@@ -590,7 +593,7 @@ export function startServer(port: number, autoOpen = false): void {
       } else if (method === "POST" && path === "/api/pick-folder") {
         await handlePickFolder(res);
       } else if (method === "GET" && path === "/api/health") {
-        json(res, { ok: true, version: "1.0.0" });
+        json(res, { ok: true, version: APP_VERSION });
       }
       // ── Fallback ────────────────────────────────────────────────────
       else {
