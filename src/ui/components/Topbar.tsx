@@ -7,6 +7,7 @@ interface TopbarProps {
   onTabChange: (tab: Tab) => void;
   activeCount: number;
   globalSpeed: number;
+  updateAvailable: string | null;
 }
 
 function formatSpeed(mbps: number): string {
@@ -15,7 +16,7 @@ function formatSpeed(mbps: number): string {
   return `${(mbps * 1024).toFixed(0)} KB/s`;
 }
 
-export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, globalSpeed }: TopbarProps) {
+export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, globalSpeed, updateAvailable }: TopbarProps) {
   return (
     <div class="header">
       <div class="header-left">
@@ -25,6 +26,16 @@ export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, glob
         <span class="header-version">v{window.__VERSION__}</span>
         {globalSpeed > 0 ? (
           <span class="header-speed">{formatSpeed(globalSpeed)}</span>
+        ) : null}
+        {updateAvailable ? (
+          <a
+            class="header-update"
+            href="https://github.com/sickerine/stremio-dl/releases/latest"
+            target="_blank"
+            rel="noopener"
+          >
+            v{updateAvailable} available
+          </a>
         ) : null}
       </div>
       <div class="nav">

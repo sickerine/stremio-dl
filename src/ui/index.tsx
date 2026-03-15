@@ -11,6 +11,18 @@ import { useAbortController } from "./hooks/useAbortController";
 import { usePolling } from "./hooks/usePolling";
 import type { Tab, Job, SearchResult, SeriesMeta } from "./types";
 
+function checkForUpdate(): Promise<string | null> {
+  return fetch("https://api.github.com/repos/sickerine/stremio-dl/releases/latest")
+    .then((r) => r.json())
+    .then((d: { tag_name?: string }) => {
+      const latest = d.tag_name?.replace(/^v/, "") ?? "";
+      const current = window.__VERSION__ ?? "";
+      if (latest && current && latest !== current) return latest;
+      return null;
+    })
+    .catch(() => null);
+}
+
 declare global {
   interface Window {
     __PORT__: number;
@@ -35,6 +47,9 @@ function App() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [metaLoading, setMetaLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [updateAvailable, setUpdateAvailable] = useState<string | null>(null);
+
+  useEffect(() => { checkForUpdate().then(setUpdateAvailable); }, []);
 
   const searchAc = useAbortController();
   const metaAc = useAbortController();
@@ -128,6 +143,7 @@ function App() {
           onTabChange={handleTabChange}
           activeCount={activeCount}
           globalSpeed={globalSpeed}
+          updateAvailable={updateAvailable}
         />
         <div class="main">
           {tab === "home" ? (
