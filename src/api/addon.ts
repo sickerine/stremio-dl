@@ -38,6 +38,7 @@ export function parseAddonUrl(input: string): string {
 
 function getAddonUrl(): string {
   const baseUrl = config.get("addons.streamUrl") as string;
+  if (!baseUrl) throw new Error("No addon URL configured. Go to Config and set your Torrentio or StremThru addon URL.");
   const debridProvider = config.get("debrid.provider") as string;
   const apiKey = config.get("debrid.apiKey") as string;
 

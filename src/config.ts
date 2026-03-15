@@ -47,7 +47,7 @@ export const config = new Conf<AppConfig>({
       properties: {
         streamUrl: {
           type: "string",
-          default: "https://torrentio.strem.fun",
+          default: "",
         },
       },
       default: { streamUrl: "https://torrentio.strem.fun" },
