@@ -64,7 +64,7 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
           breakdown: results.flatMap((r, i) =>
             r.breakdown.map((ep) => ({
               ...ep,
-              name: `S${pad(meta.seasons[i]!.number)} ${ep.name}`,
+              name: `S${pad(meta.seasons[i]?.number ?? i + 1)} ${ep.name}`,
             }))
           ),
         };

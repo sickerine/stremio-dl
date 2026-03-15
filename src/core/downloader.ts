@@ -11,7 +11,7 @@ import { config } from "../config.js";
 /** Parse expected file size from stream metadata. Checks behaviorHints, then parses size from text fields. */
 export function getExpectedBytes(stream: Stream): number {
   if (stream.behaviorHints?.videoSize) return stream.behaviorHints.videoSize;
-  // Search all text fields for size patterns: 💾 2.88 GB (Torrentio) or 📦 6.27 GB (StremThru)
+  // Search all text fields for size patterns: 💾 2.88 GB or 📦 6.27 GB
   const text = `${stream.title ?? ""} ${stream.description ?? ""}`;
   const m = text.match(/[💾📦]\s*([\d.]+)\s*(GB|MB|TB)/i);
   if (!m) return 0;
@@ -53,16 +53,36 @@ function ensureDir(dir: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
-const MIN_VALID_SIZE = 100_000; // 100KB — anything smaller is a truncated/error file
-
+/**
+ * Fetch a URL, wait for a real file (not a debrid placeholder), then stream to disk.
+ * If the server returns Content-Length < 10MB, it's a debrid placeholder —
+ * poll the URL every 10s (up to 5 min) until RD finishes caching.
+ */
 async function downloadFile(
   url: string,
   outputPath: string,
   onProgress?: (percent: number, downloadedMB: number, totalMB: number, speedMBps: number) => void,
 ): Promise<void> {
-  const res = await fetch(url, { redirect: "follow" });
-  if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
-  if (!res.body) throw new Error("No response body");
+  let res: Response | null = null;
+  const maxWait = 5 * 60_000; // 5 minutes
+  const start = Date.now();
+
+  // Poll until we get a real file (Content-Length > 10MB)
+  while (Date.now() - start < maxWait) {
+    res = await fetch(url, { redirect: "follow" });
+    if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+    if (!res.body) throw new Error("No response body");
+
+    const cl = parseInt(res.headers.get("content-length") ?? "0", 10);
+    if (cl === 0 || cl > PLACEHOLDER_THRESHOLD) break; // real file or unknown size
+
+    // Placeholder — RD is still caching. Discard body and wait.
+    await res.body.cancel();
+    res = null;
+    await new Promise((r) => setTimeout(r, 10_000));
+  }
+
+  if (!res || !res.body) throw new Error("Timed out waiting for debrid to cache this file");
 
   const totalBytes = parseInt(res.headers.get("content-length") ?? "0", 10);
   let downloadedBytes = 0;
@@ -95,33 +115,8 @@ async function downloadFile(
 
   await pipeline(nodeStream, createWriteStream(outputPath));
 
-  // Validate: if Content-Length was known, check we got all of it
   if (totalBytes > 0 && downloadedBytes < totalBytes * 0.99) {
     throw new Error(`Truncated download: got ${downloadedBytes} of ${totalBytes} bytes`);
-  }
-
-  // Validate: reject suspiciously small files (likely error pages or killed connections)
-  if (downloadedBytes < MIN_VALID_SIZE) {
-    throw new Error(`File too small (${downloadedBytes} bytes) — connection likely dropped`);
-  }
-}
-
-/**
- * Download with placeholder detection. If the downloaded file is under the
- * threshold, it's likely a debrid placeholder — delete it and throw.
- */
-async function downloadFileValidated(
-  url: string,
-  outputPath: string,
-  onProgress?: (percent: number, downloadedMB: number, totalMB: number, speedMBps: number) => void,
-): Promise<void> {
-  await downloadFile(url, outputPath, onProgress);
-
-  const { statSync, unlinkSync } = await import("node:fs");
-  const actual = statSync(outputPath).size;
-  if (actual < PLACEHOLDER_THRESHOLD) {
-    unlinkSync(outputPath);
-    throw new Error(`File is ${(actual / 1_048_576).toFixed(1)}MB — likely a placeholder (torrent not cached on debrid)`);
   }
 }
 
@@ -292,12 +287,49 @@ export interface FileProgress {
 
 export type ProgressCallback = (files: FileProgress[]) => void;
 
+// ── Global download semaphore ─────────────────────────────────────────────
+// Shared across ALL jobs so total concurrent downloads never exceed the limit.
+
+class Semaphore {
+  private queue: Array<() => void> = [];
+  private active = 0;
+  constructor(private max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.active < this.max) {
+      this.active++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(() => { this.active++; resolve(); });
+    });
+  }
+
+  release(): void {
+    this.active--;
+    const next = this.queue.shift();
+    if (next) next();
+  }
+
+  get concurrency(): number { return this.active; }
+}
+
+let globalSemaphore: Semaphore | null = null;
+
+function getSemaphore(): Semaphore {
+  if (!globalSemaphore) {
+    const max = config.get("download.maxConcurrent") as number;
+    globalSemaphore = new Semaphore(max);
+  }
+  return globalSemaphore;
+}
+
 // ── Direct with progress tracking ─────────────────────────────────────────
 
 async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: ProgressCallback): Promise<void> {
   const outputDir = buildOutputDir(plan);
   ensureDir(outputDir);
-  const maxConcurrent = config.get("download.maxConcurrent") as number;
+  const sem = getSemaphore();
   const episodes = plan.individual;
   if (episodes.length === 0) throw new Error("No episodes with direct URLs to download");
 
@@ -320,32 +352,27 @@ async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: Progr
   }));
   report();
 
-  // Download with concurrency control
-  let nextIdx = 0;
-  const workers = Array.from({ length: Math.min(maxConcurrent, episodes.length) }, async () => {
-    while (nextIdx < episodes.length) {
-      const i = nextIdx++;
-      const ep = episodes[i]!;
-      const state = fileStates[i]!;
-      state.status = "downloading";
-      report();
+  // Download each episode, acquiring a global semaphore slot
+  const downloads = episodes.map(async (ep, i) => {
+    const state = fileStates[i]!;
+    const outputPath = join(outputDir, state.filename);
 
-      const outputPath = join(outputDir, state.filename);
-      let success = false;
+    await sem.acquire();
+    state.status = "downloading";
+    report();
+
+    let success = false;
+    try {
       for (let attempt = 0; attempt < 3 && !success; attempt++) {
         if (attempt > 0) {
-          state.status = "downloading";
           state.percent = 0;
           state.downloadedMB = 0;
           state.speedMBps = 0;
           report();
-          await new Promise((r) => setTimeout(r, 2000 * attempt));
+          await new Promise((r) => setTimeout(r, 3000 * attempt));
         }
         try {
-          const expectedMB = state.totalMB;
-          await downloadFileValidated(ep.stream.url!, outputPath, (percent, dlMB, totalMB, speed) => {
-            // Don't trust Content-Length if it's tiny but we expected a large file (placeholder)
-            if (expectedMB > 10 && totalMB < 10) return;
+          await downloadFile(ep.stream.url!, outputPath, (percent, dlMB, totalMB, speed) => {
             state.percent = percent;
             state.downloadedMB = dlMB;
             state.totalMB = totalMB;
@@ -362,14 +389,14 @@ async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: Progr
           state.speedMBps = 0;
         }
       }
-      if (!success) {
-        state.status = "failed";
-      }
+      if (!success) state.status = "failed";
       report();
+    } finally {
+      sem.release();
     }
   });
 
-  await Promise.all(workers);
+  await Promise.all(downloads);
 }
 
 export async function executeDownload(

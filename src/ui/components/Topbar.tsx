@@ -6,14 +6,26 @@ interface TopbarProps {
   tab: Tab;
   onTabChange: (tab: Tab) => void;
   activeCount: number;
+  globalSpeed: number;
 }
 
-export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount }: TopbarProps) {
+function formatSpeed(mbps: number): string {
+  if (mbps <= 0) return "";
+  if (mbps >= 1) return `${mbps.toFixed(1)} MB/s`;
+  return `${(mbps * 1024).toFixed(0)} KB/s`;
+}
+
+export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, globalSpeed }: TopbarProps) {
   return (
     <div class="header">
-      <button class="header-brand" onClick={() => onTabChange("home")} style="cursor:pointer;background:none;border:none">
-        Stremio<span>/</span>DL
-      </button>
+      <div class="header-left">
+        <button class="header-brand" onClick={() => onTabChange("home")} style="cursor:pointer;background:none;border:none">
+          Stremio<span>/</span>DL
+        </button>
+        {globalSpeed > 0 ? (
+          <span class="header-speed">{formatSpeed(globalSpeed)}</span>
+        ) : null}
+      </div>
       <div class="nav">
         <button
           class={`nav-link${tab === "home" ? " active" : ""}`}

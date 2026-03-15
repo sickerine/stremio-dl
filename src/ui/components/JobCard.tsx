@@ -9,7 +9,7 @@ function formatSpeed(mbps: number): string {
   return `${(mbps * 1024).toFixed(0)} KB/s`;
 }
 
-function formatSize(mb: number): string {
+function formatMB(mb: number): string {
   if (mb <= 0) return "";
   if (mb >= 1024) return `${(mb / 1024).toFixed(1)}G`;
   if (mb >= 1) return `${mb.toFixed(0)}M`;
@@ -50,7 +50,7 @@ export function JobCard({ job, onDelete }: JobCardProps) {
             <span>{job.backend}</span>
             <span>{job.totalEpisodes} {job.totalEpisodes === 1 ? "file" : "ep"}</span>
             {totalSizeMB > 0 ? (
-              <span>{formatSize(totalDownloadedMB)}/{formatSize(totalSizeMB)}</span>
+              <span>{formatMB(totalDownloadedMB)}/{formatMB(totalSizeMB)}</span>
             ) : null}
             {job.status === "downloading" && totalSpeed > 0 ? (
               <span class="job-speed-total">{formatSpeed(totalSpeed)}</span>
@@ -86,7 +86,7 @@ export function JobCard({ job, onDelete }: JobCardProps) {
                 <div class="ep-track">
                   <div class="ep-track-fill" style={`width:${pct}%;background:${color}`} />
                 </div>
-                <span class="ep-size">{size > 0 ? formatSize(size) : ""}</span>
+                <span class="ep-size">{size > 0 ? formatMB(size) : ""}</span>
                 <span class="ep-speed">
                   {ep.status === "downloading" && speed > 0 ? formatSpeed(speed) : ""}
                 </span>

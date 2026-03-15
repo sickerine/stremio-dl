@@ -51,6 +51,11 @@ function App() {
     [jobs],
   );
 
+  const globalSpeed = useMemo(
+    () => jobs.reduce((sum, j) => sum + (j.totalSpeedMBps ?? 0), 0),
+    [jobs],
+  );
+
   // ── URL param init ─────────────────────────────────────
   const initRan = useRef(false);
   useEffect(() => {
@@ -106,8 +111,8 @@ function App() {
     try {
       await api("DELETE", `/api/jobs/${id}`);
       setJobs((prev) => prev.filter((j) => j.id !== id));
-    } catch {
-      setSearchError("Failed to delete job");
+    } catch (e: unknown) {
+      console.error("Failed to delete job:", e);
     }
   }, []);
 
@@ -121,6 +126,7 @@ function App() {
           tab={tab}
           onTabChange={handleTabChange}
           activeCount={activeCount}
+          globalSpeed={globalSpeed}
         />
         <div class="main">
           {tab === "home" ? (
