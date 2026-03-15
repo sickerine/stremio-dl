@@ -56,6 +56,29 @@ chmod +x ./stremio-dl-linux-x64
 
 ---
 
+## Update
+
+One command to download the latest version, kill the old process, and start the new one.
+
+### macOS / Linux
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.sh | bash
+```
+
+- **macOS**: Installs `.app` to `/Applications`, runs `xattr -cr`, opens the app
+- **Linux**: Installs binary to `~/.local/bin/stremio-dl`, starts it in background
+
+### Windows (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\stremio-dl\stremio-dl.exe` and launches it.
+
+---
+
 ## Usage
 
 ### Executable (recommended)
