@@ -567,7 +567,7 @@ export function startServer(port: number, autoOpen = false): void {
         const jobId = path.replace("/ui/status/", "");
         res.writeHead(302, { Location: `/?job=${jobId}` });
         res.end();
-      } else if (method === "GET" && (path === "/ui/jobs" || path === "/ui" || path === "/")) {
+      } else if (method === "GET" && path === "/") {
         handleAppPage(port, res);
       }
       // ── REST API ────────────────────────────────────────────────────
@@ -619,7 +619,7 @@ export function startServer(port: number, autoOpen = false): void {
     console.log(`  Install in Stremio: ${pc.green(`http://127.0.0.1:${port}/manifest.json`)}`);
     console.log("");
     console.log("Web UI:");
-    console.log(`  ${pc.green(`http://localhost:${port}/ui/jobs`)}        Download dashboard`);
+    console.log(`  ${pc.green(`http://localhost:${port}`)}              Download dashboard`);
     console.log("");
     console.log("REST API:");
     console.log(`  GET  /api/health              Health check`);
