@@ -26,6 +26,8 @@ export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, glob
     try {
       await api("POST", "/api/update");
     } catch { /* server will die during update */ }
+    // Server will restart and open a new tab — close this one
+    setTimeout(() => window.close(), 1000);
   }, []);
 
   return (
