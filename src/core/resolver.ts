@@ -23,8 +23,12 @@ const QUALITY_RANK: Record<string, number> = {
   "480p": 1,
 };
 
+function streamText(stream: Stream): string {
+  return `${stream.name ?? ""} ${stream.title ?? ""} ${stream.description ?? ""}`;
+}
+
 function getStreamQuality(stream: Stream): string {
-  const text = `${stream.name ?? ""} ${stream.title ?? ""}`;
+  const text = streamText(stream);
   for (const [quality, pattern] of Object.entries(QUALITY_PATTERNS)) {
     if (pattern.test(text)) return quality;
   }
@@ -32,7 +36,7 @@ function getStreamQuality(stream: Stream): string {
 }
 
 function parseSeederCount(stream: Stream): number {
-  const match = stream.title?.match(/👤\s*(\d+)/);
+  const match = streamText(stream).match(/👤\s*(\d+)/);
   return match ? parseInt(match[1]!, 10) : 0;
 }
 
@@ -48,7 +52,7 @@ const REQUIRE_PATTERNS: Record<string, RegExp> = {
 
 function matchesExclude(stream: Stream, excludes: string[]): boolean {
   if (excludes.length === 0) return false;
-  const text = `${stream.name ?? ""} ${stream.title ?? ""} ${stream.behaviorHints?.filename ?? ""}`;
+  const text = `${streamText(stream)} ${stream.behaviorHints?.filename ?? ""}`;
   return excludes.some((key) => {
     const pattern = EXCLUDE_PATTERNS[key];
     return pattern ? pattern.test(text) : text.toLowerCase().includes(key.toLowerCase());
@@ -57,7 +61,7 @@ function matchesExclude(stream: Stream, excludes: string[]): boolean {
 
 function matchesRequire(stream: Stream, requires: string[]): boolean {
   if (requires.length === 0) return true;
-  const text = `${stream.name ?? ""} ${stream.title ?? ""} ${stream.behaviorHints?.filename ?? ""}`;
+  const text = `${streamText(stream)} ${stream.behaviorHints?.filename ?? ""}`;
   return requires.every((key) => {
     const pattern = REQUIRE_PATTERNS[key];
     return pattern ? pattern.test(text) : text.toLowerCase().includes(key.toLowerCase());

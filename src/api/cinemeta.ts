@@ -50,13 +50,19 @@ export async function getMeta(imdbId: string): Promise<SeriesMeta | MovieMeta> {
   return data.meta as MovieMeta;
 }
 
+function isReleased(v: Video): boolean {
+  if (!v.released) return false;
+  return new Date(v.released).getTime() <= Date.now();
+}
+
 export function getSeasons(meta: SeriesMeta): number[] {
-  const seasons = new Set(meta.videos.map((v) => v.season));
+  const released = meta.videos.filter(isReleased);
+  const seasons = new Set(released.map((v) => v.season));
   return [...seasons].filter((s) => s > 0).sort((a, b) => a - b);
 }
 
 export function getEpisodesForSeason(meta: SeriesMeta, season: number): Video[] {
   return meta.videos
-    .filter((v) => v.season === season)
+    .filter((v) => v.season === season && isReleased(v))
     .sort((a, b) => a.episode - b.episode);
 }

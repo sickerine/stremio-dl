@@ -3,10 +3,47 @@ import { pipeline } from "node:stream/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { Listr } from "listr2";
-import type { DownloadPlan, ResolvedEpisode } from "../types.js";
+import type { DownloadPlan, ResolvedEpisode, Stream } from "../types.js";
 import * as rd from "../api/real-debrid.js";
 import * as qb from "../api/qbittorrent.js";
 import { config } from "../config.js";
+
+/** Parse expected file size from stream metadata. Checks behaviorHints, then parses size from text fields. */
+export function getExpectedBytes(stream: Stream): number {
+  if (stream.behaviorHints?.videoSize) return stream.behaviorHints.videoSize;
+  // Search all text fields for size patterns: 💾 2.88 GB (Torrentio) or 📦 6.27 GB (StremThru)
+  const text = `${stream.title ?? ""} ${stream.description ?? ""}`;
+  const m = text.match(/[💾📦]\s*([\d.]+)\s*(GB|MB|TB)/i);
+  if (!m) return 0;
+  const val = parseFloat(m[1]!);
+  const unit = m[2]!.toUpperCase();
+  return Math.round(unit === "TB" ? val * 1_099_511_627_776 : unit === "GB" ? val * 1_073_741_824 : val * 1_048_576);
+}
+
+const PLACEHOLDER_THRESHOLD = 10_000_000; // 10MB — any video below this is a debrid placeholder
+
+/**
+ * Resolve file size for a stream. Order:
+ * 1. Stream metadata (instant, no network)
+ * 2. HEAD request (falls back if metadata unavailable, retries if debrid placeholder)
+ */
+export async function resolveFileSize(stream: Stream): Promise<number> {
+  const fromMeta = getExpectedBytes(stream);
+  if (fromMeta > 0) return fromMeta;
+
+  if (!stream.url) return 0;
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch(stream.url, { method: "HEAD", redirect: "follow" });
+      const cl = r.headers.get("content-length");
+      const bytes = cl ? parseInt(cl, 10) : 0;
+      if (bytes > PLACEHOLDER_THRESHOLD) return bytes;
+      if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 5000));
+    } catch { /* retry */ }
+  }
+  return 0;
+}
 
 function sanitizeFilename(name: string): string {
   return name.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim();
@@ -66,6 +103,25 @@ async function downloadFile(
   // Validate: reject suspiciously small files (likely error pages or killed connections)
   if (downloadedBytes < MIN_VALID_SIZE) {
     throw new Error(`File too small (${downloadedBytes} bytes) — connection likely dropped`);
+  }
+}
+
+/**
+ * Download with placeholder detection. If the downloaded file is under the
+ * threshold, it's likely a debrid placeholder — delete it and throw.
+ */
+async function downloadFileValidated(
+  url: string,
+  outputPath: string,
+  onProgress?: (percent: number, downloadedMB: number, totalMB: number, speedMBps: number) => void,
+): Promise<void> {
+  await downloadFile(url, outputPath, onProgress);
+
+  const { statSync, unlinkSync } = await import("node:fs");
+  const actual = statSync(outputPath).size;
+  if (actual < PLACEHOLDER_THRESHOLD) {
+    unlinkSync(outputPath);
+    throw new Error(`File is ${(actual / 1_048_576).toFixed(1)}MB — likely a placeholder (torrent not cached on debrid)`);
   }
 }
 
@@ -257,14 +313,10 @@ async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: Progr
 
   const report = (): void => onProgress?.(fileStates);
 
-  // Pre-fetch sizes via HEAD requests so totals are known upfront
+  // Resolve sizes: metadata first, HEAD fallback
   await Promise.all(episodes.map(async (ep, i) => {
-    if (!ep.stream.url) return;
-    try {
-      const head = await fetch(ep.stream.url, { method: "HEAD", redirect: "follow" });
-      const cl = head.headers.get("content-length");
-      if (cl) fileStates[i]!.totalMB = parseInt(cl, 10) / 1_048_576;
-    } catch { /* ignore */ }
+    const bytes = await resolveFileSize(ep.stream);
+    if (bytes > 0) fileStates[i]!.totalMB = bytes / 1_048_576;
   }));
   report();
 
@@ -290,7 +342,7 @@ async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: Progr
           await new Promise((r) => setTimeout(r, 2000 * attempt));
         }
         try {
-          await downloadFile(ep.stream.url!, outputPath, (percent, dlMB, totalMB, speed) => {
+          await downloadFileValidated(ep.stream.url!, outputPath, (percent, dlMB, totalMB, speed) => {
             state.percent = percent;
             state.downloadedMB = dlMB;
             state.totalMB = totalMB;

@@ -9,3 +9,4 @@ downloads/
 stremio-dl
 stremio-dl-*
 *.exe
+.DS_Store

@@ -110,6 +110,9 @@ body {
   font-family: 'Space Grotesk', sans-serif; font-size: 14px;
 }
 .search-input::placeholder { color: var(--text-dim); }
+.search-loading { border-color: var(--accent); }
+.search-loading .search-label { color: var(--accent); animation: pulse 1.2s ease infinite; }
+.panel-loading { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent); margin-left: 8px; }
 
 /* ── BUTTONS ───────────────────────────────────────────── */
 .btn {
@@ -227,9 +230,15 @@ body {
   transition: border-color 0.12s, background 0.12s;
 }
 .result:hover { border-color: var(--accent); background: var(--surface); }
+.result-poster-wrap { width: 40px; height: 58px; flex-shrink: 0; }
 .result-poster {
   width: 40px; height: 58px; background: var(--surface-alt);
-  object-fit: cover; flex-shrink: 0;
+  object-fit: cover; display: block;
+}
+.result-poster-fail {
+  display: flex; align-items: center; justify-content: center;
+  font-family: 'JetBrains Mono', monospace; font-size: 16px;
+  color: var(--text-dim); border: 1px solid var(--border);
 }
 .result-body { flex: 1; min-width: 0; }
 .result-title {

@@ -6,21 +6,33 @@ import { ChevronIcon } from "./Icons";
 interface SearchResultsProps {
   results: SearchResult[];
   onSelect: (id: string) => void;
+  loading?: boolean;
 }
 
-export const SearchResults = memo(function SearchResults({ results, onSelect }: SearchResultsProps) {
+export const SearchResults = memo(function SearchResults({ results, onSelect, loading }: SearchResultsProps) {
   if (!results.length) return null;
 
   return (
     <div>
-      <div class="panel-label" style="margin-top:8px">Results</div>
+      <div class="panel-label" style="margin-top:8px">
+        Results
+        {loading ? <span class="panel-loading pulse"> Loading...</span> : null}
+      </div>
       {results.map((r) => (
         <div key={r.id} class="result" onClick={() => onSelect(r.id)}>
-          {r.poster ? (
-            <img class="result-poster" src={r.poster} alt="" loading="lazy" />
-          ) : (
-            <div class="result-poster" />
-          )}
+          <div class="result-poster-wrap">
+            {r.poster ? (
+              <img
+                class="result-poster"
+                src={r.poster}
+                alt=""
+                loading="lazy"
+                onError={(e: Event) => { (e.target as HTMLImageElement).replaceWith(Object.assign(document.createElement("div"), { className: "result-poster result-poster-fail", textContent: "?" })); }}
+              />
+            ) : (
+              <div class="result-poster result-poster-fail">?</div>
+            )}
+          </div>
           <div class="result-body">
             <div class="result-title">{r.name}</div>
             <div class="result-meta">

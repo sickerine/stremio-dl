@@ -3,7 +3,6 @@ import pc from "picocolors";
 import ora from "ora";
 import { select, checkbox, confirm } from "@inquirer/prompts";
 import { getSeriesMeta, getSeasons, getEpisodesForSeason } from "../api/cinemeta.js";
-import { parseAddonUrl } from "../api/addon.js";
 import { resolveDownloadPlan, formatPlanSummary } from "../core/resolver.js";
 import { executeDownload, type DownloadBackend } from "../core/downloader.js";
 import { config } from "../config.js";
@@ -27,11 +26,10 @@ export const downloadCommand = new Command("download")
     addon?: string;
     yes?: boolean;
   }) => {
-    // Set addon URL if provided
+    // Set addon URL if provided (stored raw, parsed on use)
     if (opts.addon) {
-      const parsed = parseAddonUrl(opts.addon);
-      config.set("addons.streamUrl", parsed);
-      console.log(pc.dim(`Addon URL: ${parsed}\n`));
+      config.set("addons.streamUrl", opts.addon.trim());
+      console.log(pc.dim(`Addon URL: ${opts.addon.trim()}\n`));
     }
 
     // Fetch series metadata

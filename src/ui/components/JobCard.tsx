@@ -78,7 +78,7 @@ export function JobCard({ job, onDelete }: JobCardProps) {
             const color =
               ep.status === "completed" ? "var(--green)" :
               ep.status === "downloading" ? "var(--accent)" :
-              ep.status === "failed" ? "var(--accent)" :
+              ep.status === "failed" ? "#f55" :
               "rgba(255,255,255,0.04)";
             return (
               <div key={ep.episode} class="ep-row">

@@ -96,6 +96,7 @@ export interface StreamResponse {
 export interface Stream {
   name?: string;
   title?: string;
+  description?: string;
   infoHash?: string;
   url?: string;
   ytId?: string;

@@ -5,26 +5,51 @@ import type { Config } from "../types";
 
 export function SettingsView() {
   const [config, setConfig] = useState<Config | null>(null);
+  const [addonDraft, setAddonDraft] = useState("");
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     api<Config>("GET", "/api/config")
-      .then((data) => { if (!cancelled) setConfig(data); })
+      .then((data) => {
+        if (!cancelled) {
+          setConfig(data);
+          setAddonDraft(data.addonUrl);
+        }
+      })
       .catch((e) => { if (!cancelled) setError((e as Error).message); });
     return () => { cancelled = true; };
   }, []);
 
+  const dirty = config !== null && addonDraft !== config.addonUrl;
+
+  const saveAddon = useCallback(async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const data = await api<Config>("POST", "/api/config", { addonUrl: addonDraft });
+      setConfig(data);
+    } catch (e: unknown) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }, [addonDraft]);
+
   const pickFolder = useCallback(async () => {
     try {
       const r = await api<{ folder: string }>("POST", "/api/pick-folder");
-      if (r.folder) setConfig((prev) => prev ? { ...prev, outputDir: r.folder } : prev);
+      if (r.folder) {
+        await api<Config>("POST", "/api/config", { outputDir: r.folder });
+        setConfig((prev) => prev ? { ...prev, outputDir: r.folder } : prev);
+      }
     } catch (e: unknown) {
       setError(`Folder picker failed: ${(e as Error).message}`);
     }
   }, []);
 
-  if (error) {
+  if (error && !config) {
     return (
       <div class="empty">
         <div class="empty-label">Error</div>
@@ -63,8 +88,20 @@ export function SettingsView() {
         <div class="settings-label">Source</div>
         <div class="settings-row">
           <span class="settings-key">Addon</span>
-          <input class="settings-val" value={config.addonUrl} placeholder="Stream addon URL" readOnly />
+          <input
+            class="settings-val"
+            value={addonDraft}
+            placeholder="Stream addon URL"
+            onInput={(e: Event) => setAddonDraft((e.target as HTMLInputElement).value)}
+            onKeyDown={(e: KeyboardEvent) => { if (e.key === "Enter" && dirty) saveAddon(); }}
+          />
+          {dirty ? (
+            <button class="btn btn-primary btn-sm" onClick={saveAddon} disabled={saving}>
+              {saving ? "..." : "Save"}
+            </button>
+          ) : null}
         </div>
+        {error ? <div class="alert alert-error" style="margin-top:8px">{error}</div> : null}
       </div>
 
       <div class="settings-section">

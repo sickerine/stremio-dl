@@ -2,7 +2,7 @@ import { h, Fragment } from "preact";
 import { useState, useEffect, useCallback, useRef } from "preact/hooks";
 import { api } from "../lib/api";
 import { useAbortController } from "../hooks/useAbortController";
-import { pad } from "../lib/utils";
+import { pad, formatSize } from "../lib/utils";
 import type { SeriesMeta, Estimate } from "../types";
 
 interface DownloadModalProps {
@@ -14,6 +14,8 @@ interface DownloadModalProps {
 
 export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose }: DownloadModalProps) {
   const isMovie = meta.type === "movie";
+  const hasSeasons = !isMovie && meta.seasons && meta.seasons.length > 0;
+
   const [selSeason, setSelSeason] = useState(isMovie ? 0 : (initialSeason ?? meta.seasons?.[0]?.number ?? 1));
   const [selQuality, setSelQuality] = useState<"1080p" | "2160p">("1080p");
   const [webdlOnly, setWebdlOnly] = useState(false);
@@ -30,6 +32,8 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
   webdlRef.current = webdlOnly;
   seasonRef.current = selSeason;
 
+  const isAll = selSeason === 0 && !isMovie;
+
   const fetchEstimate = useCallback(async () => {
     const signal = estimateAc.next();
     const quality = qualityRef.current;
@@ -40,11 +44,38 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
     setError(null);
     const ex = quality === "1080p" ? "60fps" : "";
     const rq = webdl ? "webdl" : "";
-    const typeParam = isMovie ? "&type=movie" : "";
-    const seasonParam = isMovie ? "" : `&season=${season}`;
+
     try {
-      const data = await api<Estimate>("GET", `/api/estimate?imdbId=${meta.id}${seasonParam}${typeParam}&quality=${quality}&exclude=${ex}&require=${rq}`, undefined, signal);
-      setEstimate(data);
+      if (season === 0 && !isMovie && meta.seasons) {
+        // All seasons — parallel estimate requests
+        const results = await Promise.all(
+          meta.seasons.map((s) =>
+            api<Estimate>("GET", `/api/estimate?imdbId=${meta.id}&season=${s.number}&quality=${quality}&exclude=${ex}&require=${rq}`, undefined, signal)
+          )
+        );
+        const totalBytes = results.reduce((sum, r) => sum + r.totalBytes, 0);
+        const merged: Estimate = {
+          episodes: results.reduce((sum, r) => sum + r.episodes, 0),
+          totalEpisodes: results.reduce((sum, r) => sum + r.totalEpisodes, 0),
+          resolved: results.reduce((sum, r) => sum + r.resolved, 0),
+          totalBytes,
+          totalFormatted: formatSize(totalBytes),
+          quality,
+          breakdown: results.flatMap((r, i) =>
+            r.breakdown.map((ep) => ({
+              ...ep,
+              name: `S${pad(meta.seasons[i]!.number)} ${ep.name}`,
+            }))
+          ),
+        };
+        setEstimate(merged);
+      } else {
+        // Single season or movie
+        const typeParam = isMovie ? "&type=movie" : "";
+        const seasonParam = isMovie ? "" : `&season=${season}`;
+        const data = await api<Estimate>("GET", `/api/estimate?imdbId=${meta.id}${seasonParam}${typeParam}&quality=${quality}&exclude=${ex}&require=${rq}`, undefined, signal);
+        setEstimate(data);
+      }
     } catch (e: unknown) {
       if ((e as Error).name === "AbortError") return;
       setEstimate(null);
@@ -52,7 +83,7 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
     } finally {
       setEstimating(false);
     }
-  }, [meta.id, isMovie, estimateAc]);
+  }, [meta.id, meta.seasons, isMovie, estimateAc]);
 
   useEffect(() => { fetchEstimate(); }, [selSeason, selQuality, webdlOnly, fetchEstimate]);
   useEffect(() => () => estimateAc.abort(), [estimateAc]);
@@ -61,26 +92,39 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
     setDownloading(true);
     setError(null);
     try {
-      await api("POST", "/api/download", {
-        imdbId: meta.id,
-        type: isMovie ? "movie" : "series",
-        season: isMovie ? undefined : selSeason,
-        quality: selQuality,
-        exclude: selQuality === "1080p" ? ["60fps"] : [],
-        require: webdlOnly ? ["webdl"] : [],
-      });
+      const ex = selQuality === "1080p" ? ["60fps"] : [];
+      const rq = webdlOnly ? ["webdl"] : [];
+
+      if (isAll && meta.seasons) {
+        // Fire one job per season
+        for (const s of meta.seasons) {
+          await api("POST", "/api/download", {
+            imdbId: meta.id, type: "series", season: s.number,
+            quality: selQuality, exclude: ex, require: rq,
+          });
+        }
+      } else {
+        await api("POST", "/api/download", {
+          imdbId: meta.id,
+          type: isMovie ? "movie" : "series",
+          season: isMovie ? undefined : selSeason,
+          quality: selQuality, exclude: ex, require: rq,
+        });
+      }
       onDownloadStarted();
     } catch (e: unknown) {
       setError(`Download failed: ${(e as Error).message}`);
     } finally {
       setDownloading(false);
     }
-  }, [meta.id, isMovie, selSeason, selQuality, webdlOnly, onDownloadStarted]);
+  }, [meta.id, meta.seasons, isMovie, isAll, selSeason, selQuality, webdlOnly, onDownloadStarted]);
 
   const subtitle = isMovie ? "Movie download" : "Select season & quality";
   const dlLabel = isMovie
     ? `Download${estimate && estimate.totalBytes > 0 ? ` — ${estimate.totalFormatted}` : ""}`
-    : `Download S${pad(selSeason)}${estimate && estimate.totalBytes > 0 ? ` — ${estimate.totalFormatted}` : ""}`;
+    : isAll
+      ? `Download All${estimate && estimate.totalBytes > 0 ? ` — ${estimate.totalFormatted}` : ""}`
+      : `Download S${pad(selSeason)}${estimate && estimate.totalBytes > 0 ? ` — ${estimate.totalFormatted}` : ""}`;
 
   return (
     <div class="overlay" onClick={onClose}>
@@ -91,8 +135,11 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
         </div>
 
         <div class="modal-body">
-          {!isMovie && meta.seasons && meta.seasons.length > 0 ? (
+          {hasSeasons ? (
             <div class="chip-row">
+              <button class={`chip${isAll ? " sel" : ""}`} onClick={() => setSelSeason(0)}>
+                All
+              </button>
               {meta.seasons.map((s) => (
                 <button key={s.number} class={`chip${selSeason === s.number ? " sel" : ""}`} onClick={() => setSelSeason(s.number)}>
                   S{pad(s.number)} ({s.episodes.length})
@@ -126,15 +173,17 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
                   <span class="estimate-total">{estimate.totalFormatted}</span>
                   <span class="estimate-count">{estimate.resolved}/{estimate.totalEpisodes} {isMovie ? "file" : "ep"}</span>
                 </div>
-                {(estimate.breakdown ?? []).map((ep) => (
-                  <div key={ep.episode} class="estimate-row">
-                    <span>{isMovie ? ep.name.substring(0, 36) : `${pad(ep.episode)} ${ep.name.substring(0, 28)}`}</span>
+                {(estimate.breakdown ?? []).map((ep, i) => (
+                  <div key={i} class="estimate-row">
+                    <span>{isMovie ? ep.name.substring(0, 36) : isAll ? ep.name.substring(0, 32) : `${pad(ep.episode)} ${ep.name.substring(0, 28)}`}</span>
                     <span>{ep.bytes > 0 ? ep.size : "--"}</span>
                   </div>
                 ))}
               </Fragment>
             ) : estimate ? (
               <div class="estimate-empty">No streams found</div>
+            ) : error ? (
+              <div class="estimate-empty">Failed to resolve</div>
             ) : (
               <EstimateLoader />
             )}
@@ -148,7 +197,7 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
           <button
             class="btn btn-primary"
             onClick={handleDownload}
-            disabled={downloading || (estimate !== null && estimate.totalBytes === 0)}
+            disabled={downloading || estimating || !estimate || estimate.totalBytes === 0}
           >
             {downloading ? "Starting..." : dlLabel}
           </button>

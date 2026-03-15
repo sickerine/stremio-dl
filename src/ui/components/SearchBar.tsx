@@ -12,17 +12,18 @@ export const SearchBar = memo(function SearchBar({ onSearch, loading }: SearchBa
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === "Enter" && inputRef.current) {
-      onSearch(inputRef.current.value);
+      const q = inputRef.current.value.trim();
+      if (q) onSearch(q);
     }
   }, [onSearch]);
 
   return (
-    <div class={`search-bar${loading ? " pulse" : ""}`}>
-      <span class="search-label">Search</span>
+    <div class={`search-bar${loading ? " search-loading" : ""}`}>
+      <span class="search-label">{loading ? "..." : "Search"}</span>
       <input
         ref={inputRef}
         class="search-input"
-        placeholder="Series name..."
+        placeholder={loading ? "Searching..." : "Series or movie..."}
         onKeyDown={handleKeyDown}
       />
     </div>

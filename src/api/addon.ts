@@ -23,9 +23,9 @@ export function parseAddonUrl(input: string): string {
 }
 
 function getAddonUrl(): string {
-  const baseUrl = config.get("addons.streamUrl") as string;
-  if (!baseUrl) throw new Error("No addon URL configured. Set one in Config.");
-  return baseUrl;
+  const raw = config.get("addons.streamUrl") as string;
+  if (!raw) throw new Error("No addon URL configured. Set one in Config.");
+  return parseAddonUrl(raw);
 }
 
 export async function getStreamsForEpisode(

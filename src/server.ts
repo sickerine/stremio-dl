@@ -5,7 +5,7 @@ import pc from "picocolors";
 import { getMeta, getSeriesMeta, getSeasons, getEpisodesForSeason, searchSeries, searchMovies } from "./api/cinemeta.js";
 import { resolveDownloadPlan, resolveMovieDownloadPlan, formatPlanSummary } from "./core/resolver.js";
 import type { SeriesMeta, MovieMeta } from "./types.js";
-import { executeDownload, type DownloadBackend } from "./core/downloader.js";
+import { executeDownload, resolveFileSize, type DownloadBackend } from "./core/downloader.js";
 import { config } from "./config.js";
 
 // ── Job Management ─────────────────────────────────────────────────────────
@@ -179,20 +179,13 @@ async function handleEstimate(query: URLSearchParams, res: ServerResponse): Prom
   if (allEps.length === 0) return json(res, { episodes: 0, totalBytes: 0, totalFormatted: "0 MB", breakdown: [] });
 
   let totalBytes = 0;
-  const headPromises = allEps.map(async (ep) => {
-    const filename = ep.stream.behaviorHints?.filename ?? (plan.type === "movie" ? `${plan.meta.name}.mkv` : `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}.mkv`);
-    let bytes = 0;
-    if (ep.stream.url) {
-      try {
-        const headRes = await fetch(ep.stream.url, { method: "HEAD", redirect: "follow" });
-        const cl = headRes.headers.get("content-length");
-        if (cl) bytes = parseInt(cl, 10);
-      } catch { /* skip */ }
-    }
-    return { episode: ep.episodeNumber, name: ep.video.name, filename, bytes, size: formatSize(bytes) };
-  });
 
-  const results = await Promise.all(headPromises);
+  const results = await Promise.all(allEps.map(async (ep) => {
+    const filename = ep.stream.behaviorHints?.filename ?? (plan.type === "movie" ? `${plan.meta.name}.mkv` : `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}.mkv`);
+    const bytes = await resolveFileSize(ep.stream);
+    return { episode: ep.episodeNumber, name: ep.video.name, filename, bytes, size: formatSize(bytes) };
+  }));
+
   for (const r of results.sort((a, b) => a.episode - b.episode)) {
     totalBytes += r.bytes;
   }
@@ -356,6 +349,13 @@ function handleConfig(res: ServerResponse): void {
     outputDir: config.get("download.outputDir"),
     maxConcurrent: config.get("download.maxConcurrent"),
   });
+}
+
+async function handleConfigUpdate(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = JSON.parse(await readBody(req)) as Record<string, string>;
+  if (body.addonUrl !== undefined) config.set("addons.streamUrl", body.addonUrl);
+  if (body.outputDir !== undefined) config.set("download.outputDir", body.outputDir);
+  handleConfig(res);
 }
 
 async function handlePickFolder(res: ServerResponse): Promise<void> {
@@ -585,6 +585,8 @@ export function startServer(port: number, autoOpen = false): void {
         handleJobDelete(path.split("/api/jobs/")[1]!, res);
       } else if (method === "GET" && path === "/api/config") {
         handleConfig(res);
+      } else if (method === "POST" && path === "/api/config") {
+        await handleConfigUpdate(req, res);
       } else if (method === "POST" && path === "/api/pick-folder") {
         await handlePickFolder(res);
       } else if (method === "GET" && path === "/api/health") {
