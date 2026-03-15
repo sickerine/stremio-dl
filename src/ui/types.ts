@@ -1,4 +1,15 @@
-export type Tab = "home" | "settings";
+export type Tab = "home" | "library" | "settings";
+
+export interface LibraryShow {
+  name: string;
+  path: string;
+  seasons: Array<{
+    number: number;
+    episodes: Array<{ filename: string; filePath: string; sizeMB: number }>;
+  }>;
+  totalFiles: number;
+  totalSizeMB: number;
+}
 
 export interface EpisodeProgress {
   episode: number;

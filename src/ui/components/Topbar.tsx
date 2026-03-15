@@ -55,6 +55,12 @@ export const Topbar = memo(function Topbar({ tab, onTabChange, activeCount, glob
           {activeCount > 0 ? <span class="nav-count">{activeCount}</span> : null}
         </button>
         <button
+          class={`nav-link${tab === "library" ? " active" : ""}`}
+          onClick={() => onTabChange("library")}
+        >
+          Library
+        </button>
+        <button
           class={`nav-link${tab === "settings" ? " active" : ""}`}
           onClick={() => onTabChange("settings")}
         >

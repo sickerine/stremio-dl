@@ -504,6 +504,128 @@ async function handleTrigger(
   res.end();
 }
 
+// ── Library Scanner ───────────────────────────────────────────────────────
+
+function handleLibrary(res: ServerResponse): void {
+  const { readdirSync, statSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+
+  const outputDir = config.get("download.outputDir") as string;
+  const library: Array<{
+    name: string;
+    path: string;
+    seasons: Array<{
+      number: number;
+      episodes: Array<{ filename: string; sizeMB: number }>;
+    }>;
+    totalFiles: number;
+    totalSizeMB: number;
+  }> = [];
+
+  try {
+    const shows = readdirSync(outputDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith("."));
+
+    for (const show of shows) {
+      const showPath = join(outputDir, show.name);
+      const seasons: typeof library[number]["seasons"] = [];
+      let totalFiles = 0;
+      let totalSizeMB = 0;
+
+      const entries = readdirSync(showPath, { withFileTypes: true });
+      const seasonDirs = entries.filter((d) => d.isDirectory() && /^Season \d+$/i.test(d.name));
+
+      if (seasonDirs.length > 0) {
+        // Series with season folders
+        for (const seasonDir of seasonDirs.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))) {
+          const seasonNum = parseInt(seasonDir.name.replace(/\D/g, ""), 10);
+          const seasonPath = join(showPath, seasonDir.name);
+          const files = readdirSync(seasonPath)
+            .filter((f) => /\.(mkv|mp4|avi|m4v|webm)$/i.test(f))
+            .sort();
+
+          const episodes = files.map((f) => {
+            const fp = join(seasonPath, f);
+            const size = statSync(fp).size;
+            const sizeMB = Math.round(size / 1_048_576);
+            totalSizeMB += sizeMB;
+            totalFiles++;
+            return { filename: f, filePath: fp, sizeMB };
+          });
+
+          if (episodes.length > 0) {
+            seasons.push({ number: seasonNum, episodes });
+          }
+        }
+      } else {
+        // Movie or flat folder
+        const files = entries
+          .filter((d) => d.isFile() && /\.(mkv|mp4|avi|m4v|webm)$/i.test(d.name))
+          .map((d) => d.name)
+          .sort();
+
+        if (files.length > 0) {
+          const episodes = files.map((f) => {
+            const fp = join(showPath, f);
+            const size = statSync(fp).size;
+            const sizeMB = Math.round(size / 1_048_576);
+            totalSizeMB += sizeMB;
+            totalFiles++;
+            return { filename: f, filePath: fp, sizeMB };
+          });
+          seasons.push({ number: 0, episodes });
+        }
+      }
+
+      if (totalFiles > 0) {
+        library.push({ name: show.name, path: showPath, seasons, totalFiles, totalSizeMB });
+      }
+    }
+  } catch { /* outputDir doesn't exist yet */ }
+
+  library.sort((a, b) => a.name.localeCompare(b.name));
+  json(res, { library, outputDir });
+}
+
+async function handleLibraryOpen(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = JSON.parse(await readBody(req)) as { path: string };
+  if (!body.path) return error(res, "Missing path");
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer" : "xdg-open";
+  exec(`${cmd} "${body.path}"`);
+  json(res, { opened: true });
+}
+
+async function handleLibraryPlay(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = JSON.parse(await readBody(req)) as { path: string };
+  if (!body.path) return error(res, "Missing path");
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  exec(`${cmd} "${body.path}"`);
+
+  // Auto-mark as watched
+  const watched = (config.get("library.watched") as string[] | undefined) ?? [];
+  if (!watched.includes(body.path)) {
+    config.set("library.watched", [...watched, body.path]);
+  }
+  json(res, { playing: true });
+}
+
+async function handleLibraryWatched(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = JSON.parse(await readBody(req)) as { path: string; watched: boolean };
+  if (!body.path) return error(res, "Missing path");
+  const list = (config.get("library.watched") as string[] | undefined) ?? [];
+  if (body.watched && !list.includes(body.path)) {
+    config.set("library.watched", [...list, body.path]);
+  } else if (!body.watched) {
+    config.set("library.watched", list.filter((p) => p !== body.path));
+  }
+  json(res, { ok: true });
+}
+
+function handleLibraryWatchedList(res: ServerResponse): void {
+  const list = (config.get("library.watched") as string[] | undefined) ?? [];
+  json(res, { watched: list });
+}
+
 // ── Self-Update ───────────────────────────────────────────────────────────
 
 async function handleSelfUpdate(res: ServerResponse): Promise<void> {
@@ -640,6 +762,16 @@ export function startServer(port: number, autoOpen = false): void {
         json(res, { ok: true, version: APP_VERSION });
       } else if (method === "POST" && path === "/api/update") {
         await handleSelfUpdate(res);
+      } else if (method === "GET" && path === "/api/library") {
+        handleLibrary(res);
+      } else if (method === "POST" && path === "/api/library/open") {
+        await handleLibraryOpen(req, res);
+      } else if (method === "POST" && path === "/api/library/play") {
+        await handleLibraryPlay(req, res);
+      } else if (method === "POST" && path === "/api/library/watched") {
+        await handleLibraryWatched(req, res);
+      } else if (method === "GET" && path === "/api/library/watched") {
+        handleLibraryWatchedList(res);
       }
       // ── Fallback ────────────────────────────────────────────────────
       else {

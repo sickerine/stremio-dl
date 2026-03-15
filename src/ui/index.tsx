@@ -5,6 +5,7 @@ import { SearchBar } from "./components/SearchBar";
 import { DownloadsView } from "./components/DownloadsView";
 import { SearchResults } from "./components/SearchResults";
 import { SettingsView } from "./components/SettingsView";
+import { LibraryView } from "./components/LibraryView";
 import { DownloadModal } from "./components/DownloadModal";
 import { api } from "./lib/api";
 import { useAbortController } from "./hooks/useAbortController";
@@ -162,6 +163,10 @@ function App() {
                   initialFocusJob={INIT_JOB_ID}
                 />
               </div>
+            </div>
+          ) : tab === "library" ? (
+            <div class="container">
+              <LibraryView />
             </div>
           ) : (
             <div class="container">

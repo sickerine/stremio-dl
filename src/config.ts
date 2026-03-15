@@ -18,6 +18,9 @@ export interface AppConfig {
   addons: {
     streamUrl: string;
   };
+  library: {
+    watched: string[];
+  };
 }
 
 export const config = new Conf<AppConfig>({
@@ -67,6 +70,13 @@ export const config = new Conf<AppConfig>({
         streamUrl: { type: "string", default: "" },
       },
       default: { streamUrl: "" },
+    },
+    library: {
+      type: "object",
+      properties: {
+        watched: { type: "array", items: { type: "string" }, default: [] },
+      },
+      default: { watched: [] },
     },
   },
 });
