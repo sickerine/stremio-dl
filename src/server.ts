@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { exec } from "node:child_process";
+import { exec, spawn } from "node:child_process";
 import pc from "picocolors";
 import { getMeta, getSeriesMeta, getSeasons, getEpisodesForSeason, searchSeries, searchMovies } from "./api/cinemeta.js";
 import { resolveDownloadPlan, resolveMovieDownloadPlan, formatPlanSummary } from "./core/resolver.js";
@@ -510,22 +510,35 @@ async function handleSelfUpdate(res: ServerResponse): Promise<void> {
   const os = process.platform;
   const arch = process.arch === "arm64" ? "arm64" : "x64";
 
-  let script: string;
-  if (os === "darwin" || os === "linux") {
-    script = "curl -fsSL https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.sh | bash";
-  } else if (os === "win32") {
-    script = "powershell -ExecutionPolicy Bypass -Command \"irm https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.ps1 | iex\"";
-  } else {
+  if (os !== "darwin" && os !== "linux" && os !== "win32") {
     return error(res, `Unsupported OS: ${os}`);
   }
 
   json(res, { updating: true, os, arch });
 
-  // Run update in background — this will kill the current process
+  // Spawn the update script as a fully detached process so it survives
+  // when pkill kills this server process. Using spawn + detached + unref
+  // puts the child in its own process group and lets the parent exit
+  // without waiting for or killing the child.
   setTimeout(() => {
-    exec(script, (err) => {
-      if (err) console.error(pc.red(`Update failed: ${err}`));
-    });
+    let child;
+    if (os === "win32") {
+      child = spawn("powershell", [
+        "-ExecutionPolicy", "Bypass",
+        "-Command", "irm https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.ps1 | iex",
+      ], {
+        detached: true,
+        stdio: "ignore",
+      });
+    } else {
+      child = spawn("bash", [
+        "-c", "curl -fsSL https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.sh | bash",
+      ], {
+        detached: true,
+        stdio: "ignore",
+      });
+    }
+    child.unref();
   }, 500);
 }
 

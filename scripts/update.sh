@@ -30,8 +30,16 @@ fi
 VERSION=$(echo "$URL" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+')
 echo "Latest: $VERSION ($ASSET)"
 
-# Kill running instance
-pkill -f stremio-dl 2>/dev/null && echo "Stopped running instance" || true
+# Kill running stremio-dl server instance, but not our own process tree.
+# pgrep -f matches command lines, which would include this script's parent
+# shell, so we filter out our own process group.
+OWN_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+for pid in $(pgrep -f '[s]tremio-dl' 2>/dev/null); do
+  PID_PGID=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  if [ "$PID_PGID" != "$OWN_PGID" ]; then
+    kill "$pid" 2>/dev/null && echo "Stopped process $pid" || true
+  fi
+done
 sleep 1
 
 if [ "$OS" = "darwin" ]; then
