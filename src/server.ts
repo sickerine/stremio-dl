@@ -1,24 +1,39 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { exec } from "node:child_process";
 import pc from "picocolors";
-import { getSeriesMeta, getSeasons, getEpisodesForSeason, searchSeries, searchMovies } from "./api/cinemeta.js";
-import { resolveDownloadPlan, formatPlanSummary } from "./core/resolver.js";
+import { getMeta, getSeriesMeta, getSeasons, getEpisodesForSeason, searchSeries, searchMovies } from "./api/cinemeta.js";
+import { resolveDownloadPlan, resolveMovieDownloadPlan, formatPlanSummary } from "./core/resolver.js";
+import type { SeriesMeta, MovieMeta } from "./types.js";
 import { executeDownload, type DownloadBackend } from "./core/downloader.js";
 import { config } from "./config.js";
 
 // ── Job Management ─────────────────────────────────────────────────────────
 
+export interface EpisodeProgress {
+  episode: number;
+  filename: string;
+  status: "pending" | "downloading" | "completed" | "failed";
+  percent: number;
+  downloadedMB: number;
+  totalMB: number;
+  speedMBps: number;
+}
+
 export interface DownloadJob {
   id: string;
   imdbId: string;
+  contentType: "movie" | "series";
   seriesName: string;
   season: number;
   quality: string;
   backend: DownloadBackend;
   status: "queued" | "resolving" | "downloading" | "completed" | "failed";
   progress: number;
+  totalSpeedMBps: number;
   totalEpisodes: number;
   resolvedEpisodes: number;
+  episodeProgress: EpisodeProgress[];
   error?: string;
   outputDir?: string;
   createdAt: string;
@@ -84,11 +99,27 @@ async function handleSearch(query: URLSearchParams, res: ServerResponse): Promis
 }
 
 async function handleMeta(imdbId: string, res: ServerResponse): Promise<void> {
-  const meta = await getSeriesMeta(imdbId);
-  const seasons = getSeasons(meta);
+  const meta = await getMeta(imdbId);
+
+  if (meta.type === "movie") {
+    json(res, {
+      id: meta.id,
+      type: "movie",
+      name: meta.name,
+      year: meta.releaseInfo,
+      poster: meta.poster,
+      description: meta.description,
+      imdbRating: meta.imdbRating,
+      seasons: [],
+    });
+    return;
+  }
+
+  const seriesMeta = meta as SeriesMeta;
+  const seasons = getSeasons(seriesMeta);
   const seasonDetails = seasons.map((s) => ({
     number: s,
-    episodes: getEpisodesForSeason(meta, s).map((ep) => ({
+    episodes: getEpisodesForSeason(seriesMeta, s).map((ep) => ({
       id: ep.id,
       episode: ep.episode,
       name: ep.name,
@@ -98,6 +129,7 @@ async function handleMeta(imdbId: string, res: ServerResponse): Promise<void> {
 
   json(res, {
     id: meta.id,
+    type: "series",
     name: meta.name,
     year: meta.releaseInfo,
     poster: meta.poster,
@@ -107,18 +139,92 @@ async function handleMeta(imdbId: string, res: ServerResponse): Promise<void> {
   });
 }
 
+function formatSize(bytes: number): string {
+  if (bytes >= 1_073_741_824) return (bytes / 1_073_741_824).toFixed(1) + " GB";
+  if (bytes >= 1_048_576) return (bytes / 1_048_576).toFixed(0) + " MB";
+  return bytes + " B";
+}
+
+async function handleEstimate(query: URLSearchParams, res: ServerResponse): Promise<void> {
+  const imdbId = query.get("imdbId");
+  const seasonNum = parseInt(query.get("season") ?? "0", 10);
+  const contentType = query.get("type") ?? "series";
+  const quality = query.get("quality") ?? "1080p";
+  const excludeRaw = query.get("exclude") ?? "";
+  const excludes = excludeRaw ? excludeRaw.split(",") : [];
+  const requireRaw = query.get("require") ?? "";
+  const requires = requireRaw ? requireRaw.split(",") : [];
+
+  if (!imdbId) return error(res, "Missing imdbId");
+
+  let plan;
+  let totalEpCount: number;
+
+  if (contentType === "movie") {
+    const meta = await getMeta(imdbId) as MovieMeta;
+    plan = await resolveMovieDownloadPlan(meta, quality, excludes, requires);
+    totalEpCount = 1;
+  } else {
+    if (!seasonNum) return error(res, "Missing season");
+    const meta = await getSeriesMeta(imdbId);
+    const episodes = getEpisodesForSeason(meta, seasonNum);
+    if (episodes.length === 0) return json(res, { episodes: 0, totalBytes: 0, totalFormatted: "0 MB", breakdown: [] });
+    plan = await resolveDownloadPlan(meta, seasonNum, episodes, quality, undefined, excludes, requires);
+    totalEpCount = episodes.length;
+  }
+
+  const allEps = [...plan.packs.flatMap((p) => p.episodes), ...plan.individual]
+    .sort((a, b) => a.episodeNumber - b.episodeNumber);
+
+  if (allEps.length === 0) return json(res, { episodes: 0, totalBytes: 0, totalFormatted: "0 MB", breakdown: [] });
+
+  let totalBytes = 0;
+  const headPromises = allEps.map(async (ep) => {
+    const filename = ep.stream.behaviorHints?.filename ?? (plan.type === "movie" ? `${plan.meta.name}.mkv` : `S${String(ep.seasonNumber).padStart(2, "0")}E${String(ep.episodeNumber).padStart(2, "0")}.mkv`);
+    let bytes = 0;
+    if (ep.stream.url) {
+      try {
+        const headRes = await fetch(ep.stream.url, { method: "HEAD", redirect: "follow" });
+        const cl = headRes.headers.get("content-length");
+        if (cl) bytes = parseInt(cl, 10);
+      } catch { /* skip */ }
+    }
+    return { episode: ep.episodeNumber, name: ep.video.name, filename, bytes, size: formatSize(bytes) };
+  });
+
+  const results = await Promise.all(headPromises);
+  for (const r of results.sort((a, b) => a.episode - b.episode)) {
+    totalBytes += r.bytes;
+  }
+
+  json(res, {
+    episodes: allEps.length,
+    totalEpisodes: totalEpCount,
+    resolved: allEps.length,
+    totalBytes,
+    totalFormatted: formatSize(totalBytes),
+    quality,
+    breakdown: results.sort((a, b) => a.episode - b.episode),
+  });
+}
+
 async function handleDownload(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = JSON.parse(await readBody(req)) as {
     imdbId: string;
-    season: number;
+    type?: "movie" | "series";
+    season?: number;
     quality?: string;
     backend?: DownloadBackend;
     episodes?: number[];
     exclude?: string[];
+    require?: string[];
   };
 
-  if (!body.imdbId || !body.season) {
-    return error(res, "Missing imdbId or season");
+  if (!body.imdbId) {
+    return error(res, "Missing imdbId");
+  }
+  if (body.type !== "movie" && !body.season) {
+    return error(res, "Missing season for series download");
   }
 
   const quality = body.quality ?? (config.get("download.preferredQuality") as string);
@@ -128,44 +234,55 @@ async function handleDownload(req: IncomingMessage, res: ServerResponse): Promis
   const job: DownloadJob = {
     id: jobId,
     imdbId: body.imdbId,
+    contentType: body.type ?? "series",
     seriesName: "",
-    season: body.season,
+    season: body.season ?? 0,
     quality,
     backend,
     status: "queued",
     progress: 0,
+    totalSpeedMBps: 0,
     totalEpisodes: 0,
     resolvedEpisodes: 0,
+    episodeProgress: [],
     createdAt: new Date().toISOString(),
   };
   jobs.set(jobId, job);
 
   json(res, { jobId, status: "queued" }, 201);
 
-  runJob(job, body.episodes, body.exclude).catch((err) => {
+  runJob(job, body.episodes, body.exclude, body.require).catch((err) => {
     job.status = "failed";
     job.error = String(err);
   });
 }
 
-async function runJob(job: DownloadJob, episodeFilter?: number[], excludes: string[] = []): Promise<void> {
+async function runJob(job: DownloadJob, episodeFilter?: number[], excludes: string[] = [], requires: string[] = []): Promise<void> {
   try {
     job.status = "resolving";
-    const meta = await getSeriesMeta(job.imdbId);
+    const meta = await getMeta(job.imdbId);
     job.seriesName = meta.name;
 
-    let episodes = getEpisodesForSeason(meta, job.season);
-    job.totalEpisodes = episodes.length;
+    let plan;
 
-    if (episodeFilter && episodeFilter.length > 0) {
-      episodes = episodes.filter((ep) => episodeFilter.includes(ep.episode));
+    if (job.contentType === "movie" || meta.type === "movie") {
+      job.contentType = "movie";
+      job.totalEpisodes = 1;
+      plan = await resolveMovieDownloadPlan(meta as MovieMeta, job.quality, excludes, requires);
+    } else {
+      const seriesMeta = meta as SeriesMeta;
+      let episodes = getEpisodesForSeason(seriesMeta, job.season);
       job.totalEpisodes = episodes.length;
-    }
 
-    const plan = await resolveDownloadPlan(meta, job.season, episodes, job.quality, (done, total) => {
-      job.resolvedEpisodes = done;
-      job.progress = Math.round((done / total) * 30);
-    }, excludes);
+      if (episodeFilter && episodeFilter.length > 0) {
+        episodes = episodes.filter((ep) => episodeFilter.includes(ep.episode));
+        job.totalEpisodes = episodes.length;
+      }
+
+      plan = await resolveDownloadPlan(seriesMeta, job.season, episodes, job.quality, (done, _total) => {
+        job.resolvedEpisodes = done;
+      }, excludes, requires);
+    }
 
     const resolvedCount = plan.packs.reduce((sum, p) => sum + p.episodes.length, 0) + plan.individual.length;
     if (resolvedCount === 0) {
@@ -179,12 +296,27 @@ async function runJob(job: DownloadJob, episodeFilter?: number[], excludes: stri
     }
 
     job.status = "downloading";
-    job.progress = 30;
+    job.progress = 0;
 
-    console.log(pc.blue(`[Job ${job.id.substring(0, 8)}] Downloading ${job.seriesName} S${String(job.season).padStart(2, "0")}`));
+    const label = job.contentType === "movie" ? job.seriesName : `${job.seriesName} S${String(job.season).padStart(2, "0")}`;
+    console.log(pc.blue(`[Job ${job.id.substring(0, 8)}] Downloading ${label}`));
     console.log(formatPlanSummary(plan));
 
-    const outputDir = await executeDownload(plan, job.backend);
+    const outputDir = await executeDownload(plan, job.backend, (files) => {
+      job.episodeProgress = files.map((f) => ({
+        episode: f.index + 1,
+        filename: f.filename,
+        status: f.status,
+        percent: f.percent,
+        downloadedMB: f.downloadedMB,
+        totalMB: f.totalMB,
+        speedMBps: f.speedMBps,
+      }));
+      const totalFiles = files.length;
+      const fileProgress = files.reduce((sum, f) => sum + (f.status === "completed" ? 100 : f.percent), 0) / totalFiles;
+      job.progress = Math.round(fileProgress);
+      job.totalSpeedMBps = files.reduce((sum, f) => sum + (f.status === "downloading" ? f.speedMBps : 0), 0);
+    });
     job.outputDir = outputDir;
     job.status = "completed";
     job.progress = 100;
@@ -229,6 +361,38 @@ function handleConfig(res: ServerResponse): void {
   });
 }
 
+async function handlePickFolder(res: ServerResponse): Promise<void> {
+  const { execSync } = await import("node:child_process");
+  let folder = "";
+  try {
+    if (process.platform === "darwin") {
+      const result = execSync(
+        `osascript -e 'POSIX path of (choose folder with prompt "Select download folder")'`,
+        { encoding: "utf-8", timeout: 60_000 },
+      ).trim();
+      folder = result;
+    } else if (process.platform === "win32") {
+      const result = execSync(
+        `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select download folder'; if ($f.ShowDialog() -eq 'OK') { $f.SelectedPath }"`,
+        { encoding: "utf-8", timeout: 60_000 },
+      ).trim();
+      folder = result;
+    } else {
+      const result = execSync(
+        `zenity --file-selection --directory --title="Select download folder" 2>/dev/null || kdialog --getexistingdirectory ~ 2>/dev/null`,
+        { encoding: "utf-8", timeout: 60_000 },
+      ).trim();
+      folder = result;
+    }
+  } catch {
+    return json(res, { folder: "" });
+  }
+  if (folder) {
+    config.set("download.outputDir", folder);
+  }
+  json(res, { folder });
+}
+
 // ── Stremio Addon: Manifest ───────────────────────────────────────────────
 
 function handleManifest(_port: number, res: ServerResponse): void {
@@ -240,11 +404,11 @@ function handleManifest(_port: number, res: ServerResponse): void {
     resources: [
       {
         name: "stream",
-        types: ["series"],
+        types: ["movie", "series"],
         idPrefixes: ["tt"],
       },
     ],
-    types: ["series"],
+    types: ["movie", "series"],
     catalogs: [],
     idPrefixes: ["tt"],
     behaviorHints: { configurable: false },
@@ -253,44 +417,38 @@ function handleManifest(_port: number, res: ServerResponse): void {
 
 // ── Stremio Addon: Stream ─────────────────────────────────────────────────
 
-async function handleAddonStream(id: string, port: number, res: ServerResponse): Promise<void> {
-  // id format: "tt0903747:1:1" (imdbId:season:episode)
+async function handleAddonStream(id: string, type: "movie" | "series", port: number, res: ServerResponse): Promise<void> {
   const parts = id.replace(".json", "").split(":");
   const imdbId = parts[0];
-  const season = parseInt(parts[1] ?? "0", 10);
+  const base = `http://127.0.0.1:${port}`;
 
-  if (!imdbId || !season) {
+  if (!imdbId) {
     json(res, { streams: [] });
     return;
   }
 
-  const base = `http://127.0.0.1:${port}`;
-  const ep = parts[2] ?? "1";
-
-  json(res, {
-    streams: [
-      {
-        name: "DL Season\n1080p",
-        description: `S${String(season).padStart(2, "0")} | 1080p | No 60fps`,
-        externalUrl: `${base}/ui/trigger/${imdbId}/${season}?quality=1080p&exclude=60fps`,
-      },
-      {
-        name: "DL Season\n4K",
-        description: `S${String(season).padStart(2, "0")} | 4K/2160p`,
-        externalUrl: `${base}/ui/trigger/${imdbId}/${season}?quality=2160p`,
-      },
-      {
-        name: "DL Episode\n1080p",
-        description: `E${String(ep).padStart(2, "0")} | 1080p | No 60fps`,
-        externalUrl: `${base}/ui/trigger/${imdbId}/${season}/${ep}?quality=1080p&exclude=60fps`,
-      },
-      {
-        name: "DL Episode\n4K",
-        description: `E${String(ep).padStart(2, "0")} | 4K/2160p`,
-        externalUrl: `${base}/ui/trigger/${imdbId}/${season}/${ep}?quality=2160p`,
-      },
-    ],
-  });
+  if (type === "movie") {
+    json(res, {
+      streams: [{
+        name: "Stremio DL",
+        description: "Download Movie",
+        externalUrl: `${base}/?download=${imdbId}&type=movie`,
+      }],
+    });
+  } else {
+    const season = parseInt(parts[1] ?? "0", 10);
+    if (!season) {
+      json(res, { streams: [] });
+      return;
+    }
+    json(res, {
+      streams: [{
+        name: "Stremio DL",
+        description: `Download Season ${season}`,
+        externalUrl: `${base}/?download=${imdbId}&season=${season}`,
+      }],
+    });
+  }
 }
 
 // ── Trigger UI ─────────────────────────────────────────────────────────────
@@ -305,233 +463,71 @@ async function handleTrigger(
   const quality = query.get("quality") ?? (config.get("download.preferredQuality") as string);
   const excludeRaw = query.get("exclude") ?? "";
   const excludes = excludeRaw ? excludeRaw.split(",") : [];
+  const requireRaw = query.get("require") ?? "";
+  const requires = requireRaw ? requireRaw.split(",") : [];
   const backend = (config.get("debrid.apiKey") as string) ? "debrid" : "direct";
 
+  const contentType: "movie" | "series" = season === 0 ? "movie" : "series";
   const jobId = randomUUID();
   const job: DownloadJob = {
     id: jobId,
     imdbId,
+    contentType,
     seriesName: "",
     season,
     quality,
     backend,
     status: "queued",
     progress: 0,
+    totalSpeedMBps: 0,
     totalEpisodes: 0,
     resolvedEpisodes: 0,
+    episodeProgress: [],
     createdAt: new Date().toISOString(),
   };
   jobs.set(jobId, job);
 
   const episodeFilter = episode !== null ? [episode] : undefined;
-  runJob(job, episodeFilter, excludes).catch((err) => {
+  runJob(job, episodeFilter, excludes, requires).catch((err) => {
     job.status = "failed";
     job.error = String(err);
   });
 
-  // Redirect to status page
-  res.writeHead(302, { Location: `/ui/status/${jobId}` });
+  // Redirect to main app with job focused
+  res.writeHead(302, { Location: `/?job=${jobId}` });
   res.end();
 }
 
-function handleStatusPage(jobId: string, _port: number, res: ServerResponse): void {
-  html(res, `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Stremio DL</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #0a0a1a; color: #e0e0e0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; padding: 20px;
-    }
-    .card {
-      background: #1a1a2e; border-radius: 16px; padding: 32px;
-      max-width: 480px; width: 100%;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-    }
-    h1 { font-size: 20px; margin-bottom: 4px; color: #fff; }
-    .subtitle { color: #888; font-size: 14px; margin-bottom: 24px; }
-    .progress-track {
-      height: 8px; background: #333; border-radius: 4px;
-      overflow: hidden; margin-bottom: 12px;
-    }
-    .progress-bar {
-      height: 100%; border-radius: 4px;
-      transition: width 0.5s ease, background 0.3s;
-    }
-    .progress-bar.resolving { background: #f5a623; }
-    .progress-bar.downloading { background: #7b5bf5; }
-    .progress-bar.completed { background: #4caf50; }
-    .progress-bar.failed { background: #e04b4b; }
-    .status-row {
-      display: flex; justify-content: space-between;
-      font-size: 13px; color: #aaa; margin-bottom: 8px;
-    }
-    .status-label {
-      display: inline-flex; align-items: center; gap: 6px;
-    }
-    .dot {
-      width: 8px; height: 8px; border-radius: 50%;
-    }
-    .dot.queued { background: #888; }
-    .dot.resolving { background: #f5a623; }
-    .dot.downloading { background: #7b5bf5; }
-    .dot.completed { background: #4caf50; }
-    .dot.failed { background: #e04b4b; }
-    .error { color: #e04b4b; font-size: 13px; margin-top: 8px; }
-    .output { color: #4caf50; font-size: 13px; margin-top: 8px; word-break: break-all; }
-    .back {
-      display: inline-block; margin-top: 20px;
-      color: #7b5bf5; text-decoration: none; font-size: 13px;
-    }
-    .back:hover { text-decoration: underline; }
-    .jobs-link { margin-top: 12px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h1 id="title">Starting download...</h1>
-    <div class="subtitle" id="subtitle">Initializing</div>
-    <div class="progress-track">
-      <div class="progress-bar" id="bar" style="width:0%"></div>
-    </div>
-    <div class="status-row">
-      <span class="status-label"><span class="dot" id="dot"></span><span id="status">queued</span></span>
-      <span id="percent">0%</span>
-    </div>
-    <div id="extra"></div>
-    <a href="/ui/jobs" class="back jobs-link">View all downloads</a>
-  </div>
-  <script>
-    const jobId = "${jobId}";
-    async function poll() {
-      try {
-        const res = await fetch("/api/jobs/" + jobId);
-        const job = await res.json();
-        document.getElementById("title").textContent = (job.seriesName || job.imdbId) + " S" + String(job.season).padStart(2, "0");
-        document.getElementById("subtitle").textContent = job.quality + " | " + job.backend + " | " + job.totalEpisodes + " episodes";
-        document.getElementById("bar").style.width = job.progress + "%";
-        document.getElementById("bar").className = "progress-bar " + job.status;
-        document.getElementById("dot").className = "dot " + job.status;
-        document.getElementById("status").textContent = job.status;
-        document.getElementById("percent").textContent = job.progress + "%";
-        if (job.error) {
-          document.getElementById("extra").innerHTML = '<div class="error">' + job.error + '</div>';
-        } else if (job.outputDir) {
-          document.getElementById("extra").innerHTML = '<div class="output">Saved to: ' + job.outputDir + '</div>';
-        }
-        if (job.status !== "completed" && job.status !== "failed") {
-          setTimeout(poll, 1500);
-        }
-      } catch { setTimeout(poll, 3000); }
-    }
-    poll();
-  </script>
-</body>
-</html>`);
-}
+// UI assets — imported as text so bun compile embeds them
+import uiCss from "./ui/styles.css" with { type: "text" };
+import uiJs from "./ui/dist/index.js" with { type: "text" };
 
-function handleJobsPage(port: number, res: ServerResponse): void {
+function handleAppPage(port: number, res: ServerResponse): void {
+  const css = uiCss;
+  const js = uiJs;
+
   html(res, `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Stremio DL - Downloads</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #0a0a1a; color: #e0e0e0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      padding: 32px; max-width: 640px; margin: 0 auto;
-    }
-    h1 { font-size: 24px; margin-bottom: 24px; color: #fff; }
-    .empty { color: #666; text-align: center; padding: 48px; }
-    .job {
-      background: #1a1a2e; border-radius: 12px; padding: 16px;
-      margin-bottom: 12px;
-    }
-    .job-title { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 4px; }
-    .job-meta { font-size: 12px; color: #888; margin-bottom: 8px; }
-    .progress-track {
-      height: 6px; background: #333; border-radius: 3px;
-      overflow: hidden; margin-bottom: 6px;
-    }
-    .progress-bar { height: 100%; border-radius: 3px; transition: width 0.5s; }
-    .progress-bar.resolving { background: #f5a623; }
-    .progress-bar.downloading { background: #7b5bf5; }
-    .progress-bar.completed { background: #4caf50; }
-    .progress-bar.failed { background: #e04b4b; }
-    .job-footer {
-      display: flex; justify-content: space-between;
-      font-size: 12px; color: #aaa;
-    }
-    .dot {
-      width: 6px; height: 6px; border-radius: 50%;
-      display: inline-block; margin-right: 4px;
-    }
-    .dot.queued { background: #888; }
-    .dot.resolving { background: #f5a623; }
-    .dot.downloading { background: #7b5bf5; }
-    .dot.completed { background: #4caf50; }
-    .dot.failed { background: #e04b4b; }
-    .install-info {
-      background: #1a1a2e; border-radius: 12px; padding: 16px;
-      margin-bottom: 24px; font-size: 13px; color: #aaa;
-    }
-    .install-info code {
-      background: #222; padding: 2px 6px; border-radius: 4px;
-      color: #7b5bf5; font-size: 12px;
-    }
-  </style>
-</head>
-<body>
-  <h1>Stremio Downloads</h1>
-  <div class="install-info">
-    Install addon in Stremio: <code>http://localhost:${port}/manifest.json</code>
-  </div>
-  <div id="list"><div class="empty">Loading...</div></div>
-  <script>
-    async function poll() {
-      try {
-        const res = await fetch("/api/jobs");
-        const data = await res.json();
-        const el = document.getElementById("list");
-        if (!data.jobs || data.jobs.length === 0) {
-          el.innerHTML = '<div class="empty">No downloads yet. Use Stremio to start a download.</div>';
-        } else {
-          el.innerHTML = data.jobs.map(j => \`
-            <div class="job">
-              <div class="job-title">\${j.seriesName || j.imdbId} S\${String(j.season).padStart(2,"0")}</div>
-              <div class="job-meta">\${j.quality} | \${j.backend} | \${j.totalEpisodes} eps</div>
-              <div class="progress-track">
-                <div class="progress-bar \${j.status}" style="width:\${j.progress}%"></div>
-              </div>
-              <div class="job-footer">
-                <span><span class="dot \${j.status}"></span>\${j.status}\${j.error ? ": " + j.error.substring(0, 60) : ""}</span>
-                <span>\${j.progress}%</span>
-              </div>
-              \${j.outputDir ? '<div style="font-size:11px;color:#4caf50;margin-top:6px">'+j.outputDir+'</div>' : ''}
-            </div>
-          \`).join("");
-        }
-      } catch { }
-      setTimeout(poll, 2000);
-    }
-    poll();
-  </script>
-</body>
-</html>`);
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stremio DL</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>${css}</style></head><body>
+<div id="app"></div>
+<script>window.__PORT__=${port};</script>
+<script>${js}</script>
+</body></html>`);
 }
 
 // ── Server ─────────────────────────────────────────────────────────────────
 
-export function startServer(port: number): void {
+function openBrowser(url: string): void {
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+  exec(`${cmd} "${url}"`);
+}
+
+export function startServer(port: number, autoOpen = false): void {
   const server = createServer(async (req, res) => {
     const method = req.method ?? "GET";
     const rawUrl = req.url ?? "/";
@@ -553,9 +549,12 @@ export function startServer(port: number): void {
       // ── Stremio Addon Protocol ──────────────────────────────────────
       if (method === "GET" && path === "/manifest.json") {
         handleManifest(port, res);
+      } else if (method === "GET" && path.startsWith("/stream/movie/")) {
+        const id = path.replace("/stream/movie/", "").replace(".json", "");
+        await handleAddonStream(id, "movie", port, res);
       } else if (method === "GET" && path.startsWith("/stream/series/")) {
         const id = path.replace("/stream/series/", "").replace(".json", "");
-        await handleAddonStream(id, port, res);
+        await handleAddonStream(id, "series", port, res);
       }
       // ── Web UI ──────────────────────────────────────────────────────
       else if (method === "GET" && path.startsWith("/ui/trigger/")) {
@@ -566,12 +565,15 @@ export function startServer(port: number): void {
         await handleTrigger(imdbId, season, episode, query, res);
       } else if (method === "GET" && path.startsWith("/ui/status/")) {
         const jobId = path.replace("/ui/status/", "");
-        handleStatusPage(jobId, port, res);
-      } else if (method === "GET" && path === "/ui/jobs") {
-        handleJobsPage(port, res);
+        res.writeHead(302, { Location: `/?job=${jobId}` });
+        res.end();
+      } else if (method === "GET" && (path === "/ui/jobs" || path === "/ui" || path === "/")) {
+        handleAppPage(port, res);
       }
       // ── REST API ────────────────────────────────────────────────────
-      else if (method === "GET" && path === "/api/search") {
+      else if (method === "GET" && path === "/api/estimate") {
+        await handleEstimate(query, res);
+      } else if (method === "GET" && path === "/api/search") {
         await handleSearch(query, res);
       } else if (method === "GET" && path.startsWith("/api/meta/")) {
         const imdbId = path.split("/api/meta/")[1]!;
@@ -586,6 +588,8 @@ export function startServer(port: number): void {
         handleJobDelete(path.split("/api/jobs/")[1]!, res);
       } else if (method === "GET" && path === "/api/config") {
         handleConfig(res);
+      } else if (method === "POST" && path === "/api/pick-folder") {
+        await handlePickFolder(res);
       } else if (method === "GET" && path === "/api/health") {
         json(res, { ok: true, version: "1.0.0" });
       }
@@ -627,5 +631,6 @@ export function startServer(port: number): void {
     console.log(`  GET  /api/jobs/:id            Job status`);
     console.log(`  DELETE /api/jobs/:id          Remove job`);
     console.log(pc.dim(`\nWaiting for requests...\n`));
+    if (autoOpen) openBrowser(`http://localhost:${port}`);
   });
 }

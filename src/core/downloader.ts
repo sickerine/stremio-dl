@@ -16,10 +16,12 @@ function ensureDir(dir: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
+const MIN_VALID_SIZE = 100_000; // 100KB — anything smaller is a truncated/error file
+
 async function downloadFile(
   url: string,
   outputPath: string,
-  onProgress?: (percent: number, downloadedMB: number, totalMB: number) => void,
+  onProgress?: (percent: number, downloadedMB: number, totalMB: number, speedMBps: number) => void,
 ): Promise<void> {
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
@@ -27,28 +29,54 @@ async function downloadFile(
 
   const totalBytes = parseInt(res.headers.get("content-length") ?? "0", 10);
   let downloadedBytes = 0;
+  let lastTime = Date.now();
+  let lastBytes = 0;
+  let speedMBps = 0;
 
   const nodeStream = Readable.fromWeb(res.body as import("node:stream/web").ReadableStream);
 
   nodeStream.on("data", (chunk: Buffer) => {
     downloadedBytes += chunk.length;
+
+    const now = Date.now();
+    const elapsed = (now - lastTime) / 1000;
+    if (elapsed >= 0.5) {
+      speedMBps = (downloadedBytes - lastBytes) / 1_048_576 / elapsed;
+      lastTime = now;
+      lastBytes = downloadedBytes;
+    }
+
     if (totalBytes > 0) {
       onProgress?.(
         (downloadedBytes / totalBytes) * 100,
         downloadedBytes / 1_048_576,
         totalBytes / 1_048_576,
+        speedMBps,
       );
     }
   });
 
   await pipeline(nodeStream, createWriteStream(outputPath));
+
+  // Validate: if Content-Length was known, check we got all of it
+  if (totalBytes > 0 && downloadedBytes < totalBytes * 0.99) {
+    throw new Error(`Truncated download: got ${downloadedBytes} of ${totalBytes} bytes`);
+  }
+
+  // Validate: reject suspiciously small files (likely error pages or killed connections)
+  if (downloadedBytes < MIN_VALID_SIZE) {
+    throw new Error(`File too small (${downloadedBytes} bytes) — connection likely dropped`);
+  }
 }
 
 function buildOutputDir(plan: DownloadPlan): string {
   const base = config.get("download.outputDir") as string;
-  const seriesName = sanitizeFilename(plan.series.name);
+  const name = sanitizeFilename(plan.meta.name);
+  if (plan.type === "movie") {
+    return join(base, name);
+  }
   const seasonDir = `Season ${String(plan.season).padStart(2, "0")}`;
-  return join(base, seriesName, seasonDir);
+  return join(base, name, seasonDir);
 }
 
 function buildEpisodeFilename(ep: ResolvedEpisode): string {
@@ -59,43 +87,6 @@ function buildEpisodeFilename(ep: ResolvedEpisode): string {
   const sNum = String(ep.seasonNumber).padStart(2, "0");
   const eNum = String(ep.episodeNumber).padStart(2, "0");
   return sanitizeFilename(`S${sNum}E${eNum} - ${name}.mkv`);
-}
-
-// ── Direct Download Backend (StremThru / any URL-based streams) ────────────
-
-async function downloadDirect(plan: DownloadPlan): Promise<void> {
-  const outputDir = buildOutputDir(plan);
-  ensureDir(outputDir);
-  const maxConcurrent = config.get("download.maxConcurrent") as number;
-
-  const episodes = plan.individual; // All episodes are individual in direct mode
-
-  if (episodes.length === 0) {
-    throw new Error("No episodes with direct URLs to download");
-  }
-
-  const tasks = new Listr(
-    episodes.map((ep) => {
-      const filename = buildEpisodeFilename(ep);
-      return {
-        title: filename,
-        task: async (_ctx: unknown, task: { title: string; output: string }) => {
-          const url = ep.stream.url!;
-          const outputPath = join(outputDir, filename);
-          await downloadFile(url, outputPath, (percent, dlMB, totalMB) => {
-            task.output = `${percent.toFixed(1)}% (${dlMB.toFixed(1)}/${totalMB.toFixed(1)} MB)`;
-          });
-          task.title = `${filename} ✓`;
-        },
-      };
-    }),
-    {
-      concurrent: maxConcurrent,
-      rendererOptions: { collapseSubtasks: false },
-    },
-  );
-
-  await tasks.run();
 }
 
 // ── Real-Debrid Backend ────────────────────────────────────────────────────
@@ -233,15 +224,106 @@ async function downloadViaQBittorrent(plan: DownloadPlan): Promise<void> {
 
 export type DownloadBackend = "direct" | "debrid" | "qbittorrent";
 
+export interface FileProgress {
+  index: number;
+  filename: string;
+  status: "pending" | "downloading" | "completed" | "failed";
+  percent: number;
+  downloadedMB: number;
+  totalMB: number;
+  speedMBps: number;
+}
+
+export type ProgressCallback = (files: FileProgress[]) => void;
+
+// ── Direct with progress tracking ─────────────────────────────────────────
+
+async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: ProgressCallback): Promise<void> {
+  const outputDir = buildOutputDir(plan);
+  ensureDir(outputDir);
+  const maxConcurrent = config.get("download.maxConcurrent") as number;
+  const episodes = plan.individual;
+  if (episodes.length === 0) throw new Error("No episodes with direct URLs to download");
+
+  const fileStates: FileProgress[] = episodes.map((ep, i) => ({
+    index: i,
+    filename: buildEpisodeFilename(ep),
+    status: "pending" as const,
+    percent: 0,
+    downloadedMB: 0,
+    totalMB: 0,
+    speedMBps: 0,
+  }));
+
+  const report = (): void => onProgress?.(fileStates);
+
+  // Pre-fetch sizes via HEAD requests so totals are known upfront
+  await Promise.all(episodes.map(async (ep, i) => {
+    if (!ep.stream.url) return;
+    try {
+      const head = await fetch(ep.stream.url, { method: "HEAD", redirect: "follow" });
+      const cl = head.headers.get("content-length");
+      if (cl) fileStates[i]!.totalMB = parseInt(cl, 10) / 1_048_576;
+    } catch { /* ignore */ }
+  }));
+  report();
+
+  // Download with concurrency control
+  let nextIdx = 0;
+  const workers = Array.from({ length: Math.min(maxConcurrent, episodes.length) }, async () => {
+    while (nextIdx < episodes.length) {
+      const i = nextIdx++;
+      const ep = episodes[i]!;
+      const state = fileStates[i]!;
+      state.status = "downloading";
+      report();
+
+      const outputPath = join(outputDir, state.filename);
+      let success = false;
+      for (let attempt = 0; attempt < 3 && !success; attempt++) {
+        if (attempt > 0) {
+          state.status = "downloading";
+          state.percent = 0;
+          state.downloadedMB = 0;
+          state.speedMBps = 0;
+          report();
+          await new Promise((r) => setTimeout(r, 2000 * attempt));
+        }
+        try {
+          await downloadFile(ep.stream.url!, outputPath, (percent, dlMB, totalMB, speed) => {
+            state.percent = percent;
+            state.downloadedMB = dlMB;
+            state.totalMB = totalMB;
+            state.speedMBps = speed;
+            report();
+          });
+          state.status = "completed";
+          state.percent = 100;
+          success = true;
+        } catch {
+          // retry
+        }
+      }
+      if (!success) {
+        state.status = "failed";
+      }
+      report();
+    }
+  });
+
+  await Promise.all(workers);
+}
+
 export async function executeDownload(
   plan: DownloadPlan,
   backend: DownloadBackend,
+  onProgress?: ProgressCallback,
 ): Promise<string> {
   const outputDir = buildOutputDir(plan);
 
   switch (backend) {
     case "direct":
-      await downloadDirect(plan);
+      await downloadDirectWithProgress(plan, onProgress);
       break;
     case "debrid":
       await downloadViaDebrid(plan);

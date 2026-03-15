@@ -1,5 +1,11 @@
 node_modules/
 dist/
+src/ui/dist/
 *.tgz
 .env
 downloads/
+
+# Compiled binaries
+stremio-dl
+stremio-dl-*
+*.exe

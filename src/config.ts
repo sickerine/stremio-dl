@@ -38,7 +38,7 @@ export const config = new Conf<AppConfig>({
       },
       default: {
         outputDir: "./downloads",
-        maxConcurrent: 3,
+        maxConcurrent: 2,
         preferredQuality: "1080p",
       },
     },

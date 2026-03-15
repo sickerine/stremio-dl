@@ -1,0 +1,122 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v1.0.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: linux-x64
+            bun-target: bun-linux-x64
+            artifact: stremio-dl-linux-x64
+            outfile: stremio-dl-linux-x64
+          - name: linux-arm64
+            bun-target: bun-linux-arm64
+            artifact: stremio-dl-linux-arm64
+            outfile: stremio-dl-linux-arm64
+          - name: darwin-x64
+            bun-target: bun-darwin-x64
+            artifact: stremio-dl-darwin-x64
+            outfile: stremio-dl-darwin-x64
+          - name: darwin-arm64
+            bun-target: bun-darwin-arm64
+            artifact: stremio-dl-darwin-arm64
+            outfile: stremio-dl-darwin-arm64
+          - name: windows-x64
+            bun-target: bun-windows-x64
+            artifact: stremio-dl-windows-x64
+            outfile: stremio-dl-windows-x64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build UI bundle
+        run: bun run build-ui.ts
+
+      - name: Compile standalone executable
+        run: |
+          bun build --compile \
+            --minify \
+            --target=${{ matrix.target.bun-target }} \
+            src/cli.ts \
+            --outfile ${{ matrix.target.outfile }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target.artifact }}
+          path: ${{ matrix.target.outfile }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+
+          # Unix targets: chmod +x, tar.gz
+          for target in linux-x64 linux-arm64 darwin-x64 darwin-arm64; do
+            cp "artifacts/stremio-dl-${target}/stremio-dl-${target}" release/
+            chmod +x "release/stremio-dl-${target}"
+            tar -czf "release/stremio-dl-${target}.tar.gz" -C release "stremio-dl-${target}"
+            rm "release/stremio-dl-${target}"
+          done
+
+          # Windows: zip
+          cp artifacts/stremio-dl-windows-x64/stremio-dl-windows-x64.exe release/
+          cd release && zip stremio-dl-windows-x64.zip stremio-dl-windows-x64.exe && rm stremio-dl-windows-x64.exe
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > checksums-sha256.txt
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: Stremio DL ${{ steps.tag.outputs.tag }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: release/*

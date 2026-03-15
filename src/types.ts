@@ -128,13 +128,14 @@ export interface SeasonPack {
 }
 
 export interface DownloadPlan {
-  series: SeriesMeta;
-  season: number;
+  meta: SeriesMeta | MovieMeta;
+  type: "movie" | "series";
+  season: number; // 0 for movies
   quality: string;
   packs: SeasonPack[];
   individual: ResolvedEpisode[];
   totalEpisodes: number;
-  hasDirectUrls: boolean; // true when streams have `url` (e.g., StremThru)
+  hasDirectUrls: boolean;
 }
 
 // ── Real-Debrid Types ──────────────────────────────────────────────────────

@@ -34,6 +34,22 @@ export async function getMovieMeta(imdbId: string): Promise<MovieMeta> {
   return data.meta as MovieMeta;
 }
 
+/**
+ * Auto-detect type and fetch metadata. Tries series first, falls back to movie.
+ */
+export async function getMeta(imdbId: string): Promise<SeriesMeta | MovieMeta> {
+  try {
+    const data = await fetchJson<CinemetaResponse>(`${BASE_URL}/meta/series/${imdbId}.json`);
+    if (data.meta && (data.meta as SeriesMeta).videos?.length > 0) {
+      return data.meta as SeriesMeta;
+    }
+  } catch { /* not a series */ }
+
+  const data = await fetchJson<CinemetaResponse>(`${BASE_URL}/meta/movie/${imdbId}.json`);
+  if (!data.meta) throw new Error(`No metadata found for ${imdbId}`);
+  return data.meta as MovieMeta;
+}
+
 export function getSeasons(meta: SeriesMeta): number[] {
   const seasons = new Set(meta.videos.map((v) => v.season));
   return [...seasons].filter((s) => s > 0).sort((a, b) => a - b);

@@ -20,18 +20,21 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "dev": "tsx src/cli.ts",
-    "build": "tsup",
+    "dev": "bun run build:ui && bun run src/cli.ts",
+    "build:ui": "bun run build-ui.ts",
+    "build": "bun run build:ui && bun build --compile src/cli.ts --outfile stremio-dl",
+    "build:win": "bun run build:ui && bun build --compile src/cli.ts --outfile stremio-dl-win.exe --target=bun-windows-x64",
     "start": "node dist/cli.js",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "commander": "^13.1.0",
     "@inquirer/prompts": "^7.5.0",
+    "commander": "^13.1.0",
+    "conf": "^13.0.1",
     "listr2": "^8.2.5",
     "ora": "^8.2.0",
     "picocolors": "^1.1.1",
-    "conf": "^13.0.1"
+    "preact": "^10.29.0"
   },
   "devDependencies": {
     "tsup": "^8.4.0",
