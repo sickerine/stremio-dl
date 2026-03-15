@@ -342,7 +342,10 @@ async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: Progr
           await new Promise((r) => setTimeout(r, 2000 * attempt));
         }
         try {
+          const expectedMB = state.totalMB;
           await downloadFileValidated(ep.stream.url!, outputPath, (percent, dlMB, totalMB, speed) => {
+            // Don't trust Content-Length if it's tiny but we expected a large file (placeholder)
+            if (expectedMB > 10 && totalMB < 10) return;
             state.percent = percent;
             state.downloadedMB = dlMB;
             state.totalMB = totalMB;
@@ -351,9 +354,12 @@ async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: Progr
           });
           state.status = "completed";
           state.percent = 100;
+          state.speedMBps = 0;
           success = true;
         } catch {
-          // retry
+          state.percent = 0;
+          state.downloadedMB = 0;
+          state.speedMBps = 0;
         }
       }
       if (!success) {
