@@ -7,7 +7,7 @@ import type {
   SeriesMeta,
   MovieMeta,
 } from "../types.js";
-import { resolveAllEpisodes, getStreamsForMovie, isStremThruAddon } from "../api/addon.js";
+import { resolveAllEpisodes, getStreamsForMovie } from "../api/addon.js";
 
 const QUALITY_PATTERNS: Record<string, RegExp> = {
   "2160p": /2160p|4k|uhd/i,
@@ -159,7 +159,6 @@ export async function resolveDownloadPlan(
   requires: string[] = [],
 ): Promise<DownloadPlan> {
   const allStreams = await resolveAllEpisodes(meta.imdb_id, episodes, onProgress);
-  const stremthru = isStremThruAddon();
 
   const resolved: ResolvedEpisode[] = [];
   for (const ep of episodes) {
@@ -177,7 +176,7 @@ export async function resolveDownloadPlan(
 
   const hasDirectUrls = resolved.every((ep) => !!ep.stream.url);
 
-  if (hasDirectUrls || stremthru) {
+  if (hasDirectUrls) {
     return {
       meta,
       type: "series",
@@ -243,7 +242,7 @@ export function formatPlanSummary(plan: DownloadPlan): string {
 
   if (plan.hasDirectUrls) {
     lines.push("");
-    lines.push("Mode: Direct download (StremThru / debrid-resolved)");
+    lines.push("Mode: Direct download");
     for (const ep of plan.individual) {
       const hint = ep.stream.behaviorHints?.filename ?? ep.video.name;
       if (plan.type === "movie") {

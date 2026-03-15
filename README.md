@@ -5,7 +5,7 @@
 <h1 align="center">Stremio /DL</h1>
 
 <p align="center">
-  Batch download entire seasons and movies from Stremio addons.<br>
+  Batch download series and movies from Stremio addons.<br>
   Standalone executable — no runtime needed.
 </p>
 
@@ -77,18 +77,19 @@ Active downloads appear in the right panel with per-file speed and size tracking
 
 ### First-time setup
 
-Before downloading, configure your stream source:
+Before downloading, you need to configure your stream addon:
 
 1. Go to **Config** tab
-2. Set your **Addon URL** — this is your Torrentio or StremThru URL
+2. Set your **Addon URL**
 
-To get your addon URL from Stremio:
-- Open Stremio > Settings > Addons > click your Torrentio/StremThru addon > copy the URL
+Your addon URL is the URL of a Stremio addon that provides streams with direct download links (e.g., an addon configured with a debrid service). To get it:
+
+- Open Stremio > Settings > your stream addon > copy the URL
 
 Or set it via CLI:
 
 ```sh
-./stremio-dl addon set "https://your-addon-url.example.com/manifest.json"
+./stremio-dl addon set "https://your-addon-url/manifest.json"
 ```
 
 ### Stremio Addon Integration
@@ -123,7 +124,7 @@ Search for series and movies.
 
 ### `download <imdb_id>`
 
-Download a season or movie by IMDB ID.
+Download a season by IMDB ID.
 
 ```sh
 # Interactive — prompts for season, quality, etc.
@@ -134,16 +135,12 @@ Download a season or movie by IMDB ID.
 
 # Specific episodes
 ./stremio-dl download tt0903747 -s 3 -e 1,2,3
-
-# Movie
-./stremio-dl download tt1375666 -q 1080p -y
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-s, --season <n>` | Season number (interactive if omitted) |
 | `-q, --quality <q>` | `2160p`, `1080p`, `720p`, `480p` |
-| `-b, --backend <b>` | `direct`, `debrid`, `qbittorrent` |
 | `-o, --output <dir>` | Output directory |
 | `-e, --episodes <list>` | Specific episodes (e.g., `1,2,3` or `1-5`) |
 | `-a, --addon <url>` | Override addon URL for this download |
@@ -174,20 +171,10 @@ Manage persistent configuration.
 Manage the stream addon URL.
 
 ```sh
-./stremio-dl addon set "https://torrentio.strem.fun/sort=qualitysize/manifest.json"
+./stremio-dl addon set "https://your-addon-url/manifest.json"
 ./stremio-dl addon show
-./stremio-dl addon reset
+./stremio-dl addon reset          # Clears the addon URL
 ```
-
----
-
-## Supported Backends
-
-| Backend | How it works |
-|---------|-------------|
-| **Direct** | Downloads via URL (StremThru, debrid-resolved streams). Default when streams have direct URLs. |
-| **Real-Debrid** | Resolves torrents through Real-Debrid API, then downloads unrestricted links. |
-| **qBittorrent** | Adds torrents to a running qBittorrent instance. |
 
 ---
 
@@ -197,7 +184,7 @@ Requires [Bun](https://bun.sh).
 
 ```sh
 bun install
-bun run build          # macOS (native)
+bun run build          # Current platform (native)
 bun run build:win      # Windows (cross-compile)
 ```
 

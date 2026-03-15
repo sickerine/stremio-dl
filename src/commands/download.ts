@@ -16,7 +16,7 @@ export const downloadCommand = new Command("download")
   .option("-b, --backend <backend>", "Download backend: direct, debrid, qbittorrent")
   .option("-o, --output <dir>", "Output directory")
   .option("-e, --episodes <episodes>", "Specific episodes (e.g., 1,2,3 or 1-5)")
-  .option("-a, --addon <url>", "Stremio addon URL or share link (supports StremThru wrap URLs)")
+  .option("-a, --addon <url>", "Stremio addon URL or share link")
   .option("-y, --yes", "Skip confirmation prompts")
   .action(async (imdbId: string, opts: {
     season?: string;
@@ -27,7 +27,7 @@ export const downloadCommand = new Command("download")
     addon?: string;
     yes?: boolean;
   }) => {
-    // Set addon URL if provided (supports share URLs, StremThru wrap URLs, etc.)
+    // Set addon URL if provided
     if (opts.addon) {
       const parsed = parseAddonUrl(opts.addon);
       config.set("addons.streamUrl", parsed);
@@ -128,9 +128,9 @@ export const downloadCommand = new Command("download")
     if (opts.backend) {
       backend = opts.backend as DownloadBackend;
     } else if (plan.hasDirectUrls) {
-      // StremThru or debrid-resolved streams — download directly
+      // Streams have direct URLs — download directly
       backend = "direct";
-      console.log(pc.dim("Auto-detected direct download URLs (StremThru/debrid-resolved)\n"));
+      console.log(pc.dim("Auto-detected direct download URLs\n"));
     } else {
       const debridKey = config.get("debrid.apiKey") as string;
       if (debridKey) {

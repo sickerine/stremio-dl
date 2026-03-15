@@ -101,14 +101,14 @@ export async function waitForDownload(
 /**
  * Resolves download links for a torrent.
  *
- * IMPORTANT: Torrentio's `fileIdx` (0-based position in torrent) is NOT the same
+ * IMPORTANT: The addon's `fileIdx` (0-based position in torrent) is NOT the same
  * as Real-Debrid's file IDs. RD assigns its own IDs in the torrent info response.
  * We match by positional index: RD files are sorted by path, and fileIdx corresponds
  * to the position within the torrent's file list.
  */
 export async function getDownloadLinks(
   infoHash: string,
-  torrentioFileIdxs?: number[],
+  addonFileIdxs?: number[],
 ): Promise<{ url: string; filename: string }[]> {
   const { id } = await addMagnet(infoHash);
 
@@ -119,13 +119,13 @@ export async function getDownloadLinks(
     info = await getTorrentInfo(id);
   }
 
-  // Map Torrentio fileIdx to Real-Debrid file IDs
+  // Map addon fileIdx to Real-Debrid file IDs
   // RD files have their own `id` field. We need to select by RD's IDs.
-  if (torrentioFileIdxs && torrentioFileIdxs.length > 0 && info.files.length > 0) {
+  if (addonFileIdxs && addonFileIdxs.length > 0 && info.files.length > 0) {
     // RD file IDs are 1-based and correspond to position in the torrent
-    // Torrentio fileIdx is 0-based. RD file at position N has id = N+1 (typically).
+    // Addon fileIdx is 0-based. RD file at position N has id = N+1 (typically).
     // But safer: match by index position since RD lists files in torrent order.
-    const rdFileIds = torrentioFileIdxs
+    const rdFileIds = addonFileIdxs
       .map((idx) => {
         // Find the RD file that corresponds to this torrent file index
         // RD files are listed in order, so file at torrent index `idx` has RD id = idx + 1

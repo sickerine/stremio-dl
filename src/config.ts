@@ -1,5 +1,24 @@
 import Conf from "conf";
-import type { AppConfig } from "./types.js";
+
+export interface AppConfig {
+  debrid: {
+    provider: "realdebrid" | "none";
+    apiKey: string;
+  };
+  qbittorrent: {
+    url: string;
+    username: string;
+    password: string;
+  };
+  download: {
+    outputDir: string;
+    maxConcurrent: number;
+    preferredQuality: string;
+  };
+  addons: {
+    streamUrl: string;
+  };
+}
 
 export const config = new Conf<AppConfig>({
   projectName: "stremio-dl",
@@ -9,7 +28,7 @@ export const config = new Conf<AppConfig>({
       properties: {
         provider: {
           type: "string",
-          enum: ["realdebrid", "alldebrid", "none"],
+          enum: ["realdebrid", "none"],
           default: "none",
         },
         apiKey: { type: "string", default: "" },
@@ -33,7 +52,7 @@ export const config = new Conf<AppConfig>({
       type: "object",
       properties: {
         outputDir: { type: "string", default: "./downloads" },
-        maxConcurrent: { type: "number", minimum: 1, maximum: 10, default: 3 },
+        maxConcurrent: { type: "number", minimum: 1, maximum: 10, default: 2 },
         preferredQuality: { type: "string", default: "1080p" },
       },
       default: {
@@ -45,12 +64,9 @@ export const config = new Conf<AppConfig>({
     addons: {
       type: "object",
       properties: {
-        streamUrl: {
-          type: "string",
-          default: "",
-        },
+        streamUrl: { type: "string", default: "" },
       },
-      default: { streamUrl: "https://torrentio.strem.fun" },
+      default: { streamUrl: "" },
     },
   },
 });

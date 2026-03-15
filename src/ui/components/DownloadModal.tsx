@@ -77,7 +77,6 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
     }
   }, [meta.id, isMovie, selSeason, selQuality, webdlOnly, onDownloadStarted]);
 
-  const title = isMovie ? meta.name : meta.name;
   const subtitle = isMovie ? "Movie download" : "Select season & quality";
   const dlLabel = isMovie
     ? `Download${estimate && estimate.totalBytes > 0 ? ` — ${estimate.totalFormatted}` : ""}`
@@ -87,7 +86,7 @@ export function DownloadModal({ meta, initialSeason, onDownloadStarted, onClose 
     <div class="overlay" onClick={onClose}>
       <div class="modal" onClick={(e: Event) => e.stopPropagation()}>
         <div class="modal-head">
-          <div class="modal-title">{title}</div>
+          <div class="modal-title">{meta.name}</div>
           <div class="modal-sub">{subtitle}</div>
         </div>
 

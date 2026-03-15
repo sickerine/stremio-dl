@@ -350,11 +350,8 @@ function handleJobDelete(jobId: string, res: ServerResponse): void {
 }
 
 function handleConfig(res: ServerResponse): void {
-  const addonUrl = config.get("addons.streamUrl") as string;
-  const isStremThru = addonUrl.includes("/stremio/wrap/") || addonUrl.includes("/stremio/store/");
   json(res, {
-    addonUrl,
-    isStremThru,
+    addonUrl: config.get("addons.streamUrl"),
     quality: config.get("download.preferredQuality"),
     outputDir: config.get("download.outputDir"),
     maxConcurrent: config.get("download.maxConcurrent"),

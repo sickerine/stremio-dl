@@ -9,48 +9,22 @@ async function fetchJson<T>(url: string): Promise<T> {
 
 /**
  * Parses a Stremio addon share URL or manifest URL into a base URL for API queries.
- * Handles formats like:
- *   - stremio://host/stremio/wrap/{config}/manifest.json
- *   - https://host/stremio/wrap/{config}/manifest.json
- *   - https://host/stremio/wrap/{config}
- *   - https://torrentio.strem.fun
- *   - https://torrentio.strem.fun/sort=qualitysize/manifest.json
  */
 export function parseAddonUrl(input: string): string {
   let url = input.trim();
-
-  // Strip shell escape backslashes (zsh escapes = as \=)
   url = url.replace(/\\(.)/g, "$1");
-
-  // Convert stremio:// protocol to https://
   if (url.startsWith("stremio://")) {
     url = url.replace("stremio://", "https://");
   }
-
-  // Strip trailing /manifest.json
   if (url.endsWith("/manifest.json")) {
     url = url.slice(0, -"/manifest.json".length);
   }
-
-  // Strip trailing slash
   return url.replace(/\/+$/, "");
 }
 
 function getAddonUrl(): string {
   const baseUrl = config.get("addons.streamUrl") as string;
-  if (!baseUrl) throw new Error("No addon URL configured. Go to Config and set your Torrentio or StremThru addon URL.");
-  const debridProvider = config.get("debrid.provider") as string;
-  const apiKey = config.get("debrid.apiKey") as string;
-
-  // If the addon URL already contains config (like StremThru wrap URLs), use it as-is
-  if (baseUrl.includes("/stremio/wrap/") || baseUrl.includes("/stremio/store/")) {
-    return baseUrl;
-  }
-
-  // For raw Torrentio, append debrid config if available
-  if (debridProvider !== "none" && apiKey) {
-    return `${baseUrl}/${debridProvider}=${apiKey}`;
-  }
+  if (!baseUrl) throw new Error("No addon URL configured. Set one in Config.");
   return baseUrl;
 }
 
@@ -82,7 +56,6 @@ export async function resolveAllEpisodes(
   const results = new Map<string, Stream[]>();
   let done = 0;
 
-  // Fetch in batches of 5 to avoid hammering the addon
   const batchSize = 5;
   for (let i = 0; i < episodes.length; i += batchSize) {
     const batch = episodes.slice(i, i + batchSize);
@@ -96,13 +69,4 @@ export async function resolveAllEpisodes(
   }
 
   return results;
-}
-
-/**
- * Checks if the configured addon returns direct URLs (StremThru, debrid-resolved)
- * vs raw infoHash torrents (raw Torrentio).
- */
-export function isStremThruAddon(): boolean {
-  const url = config.get("addons.streamUrl") as string;
-  return url.includes("/stremio/wrap/") || url.includes("/stremio/store/");
 }

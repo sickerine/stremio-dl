@@ -79,7 +79,6 @@ export interface Estimate {
 
 export interface Config {
   addonUrl: string;
-  isStremThru: boolean;
   quality: string;
   outputDir: string;
   maxConcurrent: number;

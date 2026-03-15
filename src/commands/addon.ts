@@ -9,12 +9,11 @@ export const addonCommand = new Command("addon")
 
 addonCommand
   .command("set")
-  .description("Set the stream addon URL (supports Stremio share links, StremThru wrap URLs)")
+  .description("Set the stream addon URL")
   .argument("<url>", "Addon URL or Stremio share link")
   .action(async (rawUrl: string) => {
     const parsed = parseAddonUrl(rawUrl);
 
-    // Validate by fetching the manifest
     const spinner = ora("Validating addon...").start();
     try {
       const res = await fetch(`${parsed}/manifest.json`, { redirect: "follow" });
@@ -26,23 +25,14 @@ addonCommand
       const id = manifest.id ?? "";
       const version = manifest.version ?? "";
       spinner.succeed(`Addon set: ${pc.bold(name)} ${pc.dim(`(${id} v${version})`)}`);
-
-      if (parsed.includes("/stremio/wrap/")) {
-        console.log(pc.green("  StremThru Wrap detected — direct download mode will be used automatically"));
-      } else if (parsed.includes("/stremio/store/")) {
-        console.log(pc.green("  StremThru Store detected — direct download mode will be used automatically"));
-      }
-
       console.log(pc.dim(`  URL: ${parsed}`));
     } catch (err) {
       spinner.fail("Failed to validate addon");
       console.error(pc.red(`  Could not fetch manifest from: ${parsed}/manifest.json`));
       console.error(pc.red(`  Error: ${err}`));
       console.log(pc.dim("\n  Make sure the URL is correct and the addon is reachable."));
-      console.log(pc.dim("  Examples:"));
-      console.log(pc.dim("    stremio-dl addon set https://torrentio.strem.fun"));
-      console.log(pc.dim("    stremio-dl addon set stremio://your-stremthru.com/stremio/wrap/{config}/manifest.json"));
-      console.log(pc.dim("    stremio-dl addon set https://your-stremthru.com/stremio/wrap/{config}"));
+      console.log(pc.dim("  Example:"));
+      console.log(pc.dim("    stremio-dl addon set https://your-addon.example.com/manifest.json"));
     }
   });
 
@@ -51,19 +41,17 @@ addonCommand
   .description("Show the current addon URL")
   .action(() => {
     const url = config.get("addons.streamUrl") as string;
-    const isStremThru = url.includes("/stremio/wrap/") || url.includes("/stremio/store/");
-    console.log(`Current addon: ${pc.bold(url)}`);
-    if (isStremThru) {
-      console.log(pc.green("  Type: StremThru (direct download mode)"));
+    if (!url) {
+      console.log(pc.yellow("No addon configured. Set one with: stremio-dl addon set <url>"));
     } else {
-      console.log(pc.dim("  Type: Standard Stremio addon (requires debrid/torrent backend)"));
+      console.log(`Current addon: ${pc.bold(url)}`);
     }
   });
 
 addonCommand
   .command("reset")
-  .description("Reset to default Torrentio addon")
+  .description("Clear the addon URL")
   .action(() => {
-    config.set("addons.streamUrl", "https://torrentio.strem.fun");
-    console.log(pc.green("Addon reset to: https://torrentio.strem.fun"));
+    config.set("addons.streamUrl", "");
+    console.log(pc.green("Addon URL cleared."));
   });

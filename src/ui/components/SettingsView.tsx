@@ -63,7 +63,7 @@ export function SettingsView() {
         <div class="settings-label">Source</div>
         <div class="settings-row">
           <span class="settings-key">Addon</span>
-          <input class="settings-val" value={config.addonUrl} placeholder="Torrentio or StremThru URL" readOnly />
+          <input class="settings-val" value={config.addonUrl} placeholder="Stream addon URL" readOnly />
         </div>
       </div>
 

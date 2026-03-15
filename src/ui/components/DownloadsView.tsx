@@ -35,7 +35,7 @@ export function DownloadsView({ jobs, onDelete, initialFocusJob }: DownloadsView
     return (
       <div class="empty">
         <div class="empty-label">Queue Empty</div>
-        <div class="empty-desc">Search for a series to start downloading</div>
+        <div class="empty-desc">Search for a title to start downloading</div>
       </div>
     );
   }

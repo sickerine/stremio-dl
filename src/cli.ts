@@ -26,7 +26,7 @@ async function isPortTaken(port: number): Promise<boolean> {
 
 const program = new Command()
   .name("stremio-dl")
-  .description("Download entire seasons from Stremio addons")
+  .description("Download series and movies from Stremio addons")
   .version("1.0.0");
 
 program.addCommand(searchCommand);

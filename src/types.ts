@@ -225,24 +225,4 @@ export interface QBFileInfo {
   availability: number;
 }
 
-// ── Config Types ───────────────────────────────────────────────────────────
-
-export interface AppConfig {
-  debrid: {
-    provider: "realdebrid" | "alldebrid" | "none";
-    apiKey: string;
-  };
-  qbittorrent: {
-    url: string;
-    username: string;
-    password: string;
-  };
-  download: {
-    outputDir: string;
-    maxConcurrent: number;
-    preferredQuality: string;
-  };
-  addons: {
-    streamUrl: string;
-  };
-}
+// AppConfig is defined in config.ts (single source of truth)
