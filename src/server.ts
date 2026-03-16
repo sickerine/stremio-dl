@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { exec, spawn } from "node:child_process";
+import { exec } from "node:child_process";
+import { writeFileSync } from "node:fs";
 import pc from "picocolors";
 import { getMeta, getSeriesMeta, getSeasons, getEpisodesForSeason, searchSeries, searchMovies } from "./api/cinemeta.js";
 import { resolveDownloadPlan, resolveMovieDownloadPlan, formatPlanSummary } from "./core/resolver.js";
@@ -627,40 +628,39 @@ function handleLibraryWatchedList(res: ServerResponse): void {
 }
 
 // ── Self-Update ───────────────────────────────────────────────────────────
+//
+// Downloads scripts/update.sh (or .ps1) to /tmp and runs it with --pid.
+// Same script users run manually, just with the exact PID for targeted kill.
 
 async function handleSelfUpdate(res: ServerResponse): Promise<void> {
-  const os = process.platform;
-  const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const platform = process.platform;
 
-  if (os !== "darwin" && os !== "linux" && os !== "win32") {
-    return error(res, `Unsupported OS: ${os}`);
+  if (platform !== "darwin" && platform !== "linux" && platform !== "win32") {
+    return error(res, `Unsupported OS: ${platform}`);
   }
 
-  json(res, { updating: true, os, arch });
+  json(res, { updating: true });
 
-  // Spawn the update script as a fully detached process so it survives
-  // when pkill kills this server process. Using spawn + detached + unref
-  // puts the child in its own process group and lets the parent exit
-  // without waiting for or killing the child.
-  setTimeout(() => {
-    let child;
-    if (os === "win32") {
-      child = spawn("powershell", [
-        "-ExecutionPolicy", "Bypass",
-        "-Command", "irm https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.ps1 | iex",
-      ], {
-        detached: true,
-        stdio: "ignore",
-      });
+  setTimeout(async () => {
+    const pid = process.pid;
+
+    if (platform === "win32") {
+      const scriptUrl = "https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.ps1";
+      const scriptPath = `${process.env.TEMP ?? "C:\\Temp"}\\stremio-dl-update.ps1`;
+      const r = await fetch(scriptUrl);
+      writeFileSync(scriptPath, await r.text());
+      Bun.spawn(["powershell", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
+        stdio: ["ignore", "ignore", "ignore"],
+      }).unref();
     } else {
-      child = spawn("bash", [
-        "-c", "curl -fsSL https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.sh | bash",
-      ], {
-        detached: true,
-        stdio: "ignore",
-      });
+      const scriptUrl = "https://raw.githubusercontent.com/sickerine/stremio-dl/main/scripts/update.sh";
+      const scriptPath = "/tmp/stremio-dl-update.sh";
+      const r = await fetch(scriptUrl);
+      writeFileSync(scriptPath, await r.text(), { mode: 0o755 });
+      Bun.spawn(["bash", scriptPath, "--pid", String(pid)], {
+        stdio: ["ignore", "ignore", "ignore"],
+      }).unref();
     }
-    child.unref();
   }, 500);
 }
 
