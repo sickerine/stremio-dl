@@ -1,6 +1,6 @@
 {
   "name": "stremio-dl",
-  "version": "1.0.12",
+  "version": "1.0.13",
   "description": "CLI tool to batch download entire seasons from Stremio addons",
   "type": "module",
   "bin": {
