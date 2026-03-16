@@ -44,6 +44,7 @@ export interface DownloadJob {
 }
 
 const jobs = new Map<string, DownloadJob>();
+const jobAborts = new Map<string, AbortController>();
 
 // ── HTTP Helpers ───────────────────────────────────────────────────────────
 
@@ -247,13 +248,14 @@ async function handleDownload(req: IncomingMessage, res: ServerResponse): Promis
 
   json(res, { jobId, status: "queued" }, 201);
 
-  runJob(job, body.episodes, body.exclude, body.require).catch((err) => {
-    job.status = "failed";
-    job.error = String(err);
-  });
+  const ac = new AbortController();
+  jobAborts.set(jobId, ac);
+  runJob(job, ac.signal, body.episodes, body.exclude, body.require).catch((err) => {
+    if (!ac.signal.aborted) { job.status = "failed"; job.error = String(err); }
+  }).finally(() => jobAborts.delete(jobId));
 }
 
-async function runJob(job: DownloadJob, episodeFilter?: number[], excludes: string[] = [], requires: string[] = []): Promise<void> {
+async function runJob(job: DownloadJob, signal: AbortSignal, episodeFilter?: number[], excludes: string[] = [], requires: string[] = []): Promise<void> {
   try {
     job.status = "resolving";
     const meta = await getMeta(job.imdbId);
@@ -312,7 +314,7 @@ async function runJob(job: DownloadJob, episodeFilter?: number[], excludes: stri
       const fileProgress = files.reduce((sum, f) => sum + (f.status === "completed" ? 100 : f.percent), 0) / totalFiles;
       job.progress = Math.round(fileProgress);
       job.totalSpeedMBps = files.reduce((sum, f) => sum + (f.status === "downloading" ? f.speedMBps : 0), 0);
-    });
+    }, signal);
     job.outputDir = outputDir;
     job.status = "completed";
     job.progress = 100;
@@ -320,8 +322,12 @@ async function runJob(job: DownloadJob, episodeFilter?: number[], excludes: stri
 
     console.log(pc.green(`[Job ${job.id.substring(0, 8)}] Complete: ${outputDir}`));
   } catch (err) {
+    if (signal.aborted) {
+      console.log(pc.yellow(`[Job ${job.id.substring(0, 8)}] Cancelled`));
+      return;
+    }
     job.status = "failed";
-    job.error = String(err);
+    job.error = err instanceof Error ? err.message : String(err);
     console.error(pc.red(`[Job ${job.id.substring(0, 8)}] Failed: ${err}`));
   }
 }
@@ -341,6 +347,8 @@ function handleJobStatus(jobId: string, res: ServerResponse): void {
 
 function handleJobDelete(jobId: string, res: ServerResponse): void {
   if (!jobs.has(jobId)) return error(res, "Job not found", 404);
+  jobAborts.get(jobId)?.abort();
+  jobAborts.delete(jobId);
   jobs.delete(jobId);
   json(res, { deleted: true });
 }
@@ -494,11 +502,12 @@ async function handleTrigger(
   };
   jobs.set(jobId, job);
 
+  const ac2 = new AbortController();
+  jobAborts.set(jobId, ac2);
   const episodeFilter = episode !== null ? [episode] : undefined;
-  runJob(job, episodeFilter, excludes, requires).catch((err) => {
-    job.status = "failed";
-    job.error = String(err);
-  });
+  runJob(job, ac2.signal, episodeFilter, excludes, requires).catch((err) => {
+    if (!ac2.signal.aborted) { job.status = "failed"; job.error = String(err); }
+  }).finally(() => jobAborts.delete(jobId));
 
   // Redirect to main app with job focused
   res.writeHead(302, { Location: `/?job=${jobId}` });

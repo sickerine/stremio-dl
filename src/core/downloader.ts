@@ -1,4 +1,4 @@
-import { createWriteStream, mkdirSync, existsSync } from "node:fs";
+import { createWriteStream, mkdirSync, existsSync, unlinkSync } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
@@ -20,19 +20,12 @@ export function getExpectedBytes(stream: Stream): number {
   return Math.round(unit === "TB" ? val * 1_099_511_627_776 : unit === "GB" ? val * 1_073_741_824 : val * 1_048_576);
 }
 
-const PLACEHOLDER_THRESHOLD = 10_000_000; // 10MB — any video below this is a debrid placeholder
+const PLACEHOLDER_THRESHOLD = 10_000_000;
 
-/**
- * Resolve file size for a stream. Order:
- * 1. Stream metadata (instant, no network)
- * 2. HEAD request (falls back if metadata unavailable, retries if debrid placeholder)
- */
 export async function resolveFileSize(stream: Stream): Promise<number> {
   const fromMeta = getExpectedBytes(stream);
   if (fromMeta > 0) return fromMeta;
-
   if (!stream.url) return 0;
-
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const r = await fetch(stream.url, { method: "HEAD", redirect: "follow" });
@@ -53,33 +46,34 @@ function ensureDir(dir: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
-/**
- * Fetch a URL, wait for a real file (not a debrid placeholder), then stream to disk.
- * If the server returns Content-Length < 10MB, it's a debrid placeholder —
- * poll the URL every 10s (up to 5 min) until RD finishes caching.
- */
 async function downloadFile(
   url: string,
   outputPath: string,
   onProgress?: (percent: number, downloadedMB: number, totalMB: number, speedMBps: number) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   let res: Response | null = null;
-  const maxWait = 5 * 60_000; // 5 minutes
+  const maxWait = 5 * 60_000;
   const start = Date.now();
 
-  // Poll until we get a real file (Content-Length > 10MB)
   while (Date.now() - start < maxWait) {
-    res = await fetch(url, { redirect: "follow" });
+    signal?.throwIfAborted();
+    res = await fetch(url, { redirect: "follow", signal });
     if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
     if (!res.body) throw new Error("No response body");
 
     const cl = parseInt(res.headers.get("content-length") ?? "0", 10);
-    if (cl === 0 || cl > PLACEHOLDER_THRESHOLD) break; // real file or unknown size
+    if (cl === 0 || cl > PLACEHOLDER_THRESHOLD) break;
 
-    // Placeholder — RD is still caching. Discard body and wait.
     await res.body.cancel();
     res = null;
-    await new Promise((r) => setTimeout(r, 10_000));
+    // Signal-aware sleep
+    await new Promise<void>((resolve, reject) => {
+      if (signal?.aborted) return reject(signal.reason);
+      const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, 10_000);
+      const onAbort = () => { clearTimeout(timer); reject(signal!.reason); };
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   if (!res || !res.body) throw new Error("Timed out waiting for debrid to cache this file");
@@ -94,7 +88,6 @@ async function downloadFile(
 
   nodeStream.on("data", (chunk: Buffer) => {
     downloadedBytes += chunk.length;
-
     const now = Date.now();
     const elapsed = (now - lastTime) / 1000;
     if (elapsed >= 0.5) {
@@ -102,18 +95,17 @@ async function downloadFile(
       lastTime = now;
       lastBytes = downloadedBytes;
     }
-
     if (totalBytes > 0) {
-      onProgress?.(
-        (downloadedBytes / totalBytes) * 100,
-        downloadedBytes / 1_048_576,
-        totalBytes / 1_048_576,
-        speedMBps,
-      );
+      onProgress?.((downloadedBytes / totalBytes) * 100, downloadedBytes / 1_048_576, totalBytes / 1_048_576, speedMBps);
     }
   });
 
-  await pipeline(nodeStream, createWriteStream(outputPath));
+  try {
+    await pipeline(nodeStream, createWriteStream(outputPath), { signal } as any);
+  } catch (err) {
+    try { unlinkSync(outputPath); } catch { /* already gone */ }
+    throw err;
+  }
 
   if (totalBytes > 0 && downloadedBytes < totalBytes * 0.99) {
     throw new Error(`Truncated download: got ${downloadedBytes} of ${totalBytes} bytes`);
@@ -133,7 +125,6 @@ function buildOutputDir(plan: DownloadPlan): string {
 function buildEpisodeFilename(ep: ResolvedEpisode): string {
   const hint = ep.stream.behaviorHints?.filename;
   if (hint) return sanitizeFilename(hint);
-
   const name = ep.video.name;
   const sNum = String(ep.seasonNumber).padStart(2, "0");
   const eNum = String(ep.episodeNumber).padStart(2, "0");
@@ -147,50 +138,28 @@ async function downloadViaDebrid(plan: DownloadPlan): Promise<void> {
   ensureDir(outputDir);
   const maxConcurrent = config.get("download.maxConcurrent") as number;
 
-  interface DownloadItem {
-    url: string;
-    filename: string;
-  }
+  interface DownloadItem { url: string; filename: string; }
   const items: DownloadItem[] = [];
 
-  // Process season packs — one RD torrent per pack
   for (const pack of plan.packs) {
-    const fileIdxs = pack.episodes
-      .map((ep) => ep.stream.fileIdx)
-      .filter((idx): idx is number => idx !== undefined);
-
-    const results = await rd.getDownloadLinks(
-      pack.infoHash,
-      fileIdxs.length > 0 ? fileIdxs : undefined,
-    );
-
+    const fileIdxs = pack.episodes.map((ep) => ep.stream.fileIdx).filter((idx): idx is number => idx !== undefined);
+    const results = await rd.getDownloadLinks(pack.infoHash, fileIdxs.length > 0 ? fileIdxs : undefined);
     for (const result of results) {
       const matchingEp = pack.episodes.find((ep) => {
         const hint = ep.stream.behaviorHints?.filename;
         return hint && result.filename.includes(hint.replace(/\.[^.]+$/, ""));
       });
-      items.push({
-        url: result.url,
-        filename: matchingEp ? buildEpisodeFilename(matchingEp) : sanitizeFilename(result.filename),
-      });
+      items.push({ url: result.url, filename: matchingEp ? buildEpisodeFilename(matchingEp) : sanitizeFilename(result.filename) });
     }
   }
 
-  // Process individual episodes
   for (const ep of plan.individual) {
     const fileIdxs = ep.stream.fileIdx !== undefined ? [ep.stream.fileIdx] : undefined;
     const results = await rd.getDownloadLinks(ep.stream.infoHash!, fileIdxs);
-    if (results[0]) {
-      items.push({
-        url: results[0].url,
-        filename: buildEpisodeFilename(ep),
-      });
-    }
+    if (results[0]) items.push({ url: results[0].url, filename: buildEpisodeFilename(ep) });
   }
 
-  if (items.length === 0) {
-    throw new Error("No download links could be resolved");
-  }
+  if (items.length === 0) throw new Error("No download links could be resolved");
 
   const tasks = new Listr(
     items.map((item) => ({
@@ -203,12 +172,8 @@ async function downloadViaDebrid(plan: DownloadPlan): Promise<void> {
         task.title = `${item.filename} ✓`;
       },
     })),
-    {
-      concurrent: maxConcurrent,
-      rendererOptions: { collapseSubtasks: false },
-    },
+    { concurrent: maxConcurrent, rendererOptions: { collapseSubtasks: false } },
   );
-
   await tasks.run();
 }
 
@@ -217,18 +182,13 @@ async function downloadViaDebrid(plan: DownloadPlan): Promise<void> {
 async function downloadViaQBittorrent(plan: DownloadPlan): Promise<void> {
   const outputDir = buildOutputDir(plan);
   ensureDir(outputDir);
-
   await qb.login();
 
   const hashesToProcess = new Map<string, number[]>();
-
   for (const pack of plan.packs) {
-    const fileIdxs = pack.episodes
-      .map((ep) => ep.stream.fileIdx)
-      .filter((idx): idx is number => idx !== undefined);
+    const fileIdxs = pack.episodes.map((ep) => ep.stream.fileIdx).filter((idx): idx is number => idx !== undefined);
     hashesToProcess.set(pack.infoHash, fileIdxs);
   }
-
   for (const ep of plan.individual) {
     const hash = ep.stream.infoHash!;
     const idx = ep.stream.fileIdx;
@@ -240,34 +200,22 @@ async function downloadViaQBittorrent(plan: DownloadPlan): Promise<void> {
       title: `Adding torrent ${hash.substring(0, 12)}...`,
       task: async (_ctx: unknown, task: { title: string; output: string }) => {
         await qb.addMagnet(hash, outputDir, true);
-
         task.output = "Waiting for metadata...";
         const files = await qb.waitForMetadata(hash);
-
         if (desiredFileIdxs.length > 0) {
           const allIdxs = files.map((f) => f.index);
           const unwantedIdxs = allIdxs.filter((i) => !desiredFileIdxs.includes(i));
-          if (unwantedIdxs.length > 0) {
-            await qb.setFilePriority(hash, unwantedIdxs, 0);
-          }
+          if (unwantedIdxs.length > 0) await qb.setFilePriority(hash, unwantedIdxs, 0);
         }
-
         await qb.resumeTorrent(hash);
-
         await qb.waitForCompletion(hash, (progress, dlSpeed) => {
-          const speedMB = (dlSpeed / 1_048_576).toFixed(1);
-          task.output = `${progress.toFixed(1)}% @ ${speedMB} MB/s`;
+          task.output = `${progress.toFixed(1)}% @ ${(dlSpeed / 1_048_576).toFixed(1)} MB/s`;
         });
-
         task.title = `${hash.substring(0, 12)}... ✓`;
       },
     })),
-    {
-      concurrent: false,
-      rendererOptions: { collapseSubtasks: false },
-    },
+    { concurrent: false, rendererOptions: { collapseSubtasks: false } },
   );
-
   await tasks.run();
 }
 
@@ -287,31 +235,40 @@ export interface FileProgress {
 
 export type ProgressCallback = (files: FileProgress[]) => void;
 
-// ── Global download semaphore ─────────────────────────────────────────────
-// Shared across ALL jobs so total concurrent downloads never exceed the limit.
+// ── Global download semaphore (abort-aware) ───────────────────────────────
 
 class Semaphore {
-  private queue: Array<() => void> = [];
+  private queue: Array<{ resolve: () => void; reject: (err: unknown) => void }> = [];
   private active = 0;
   constructor(private max: number) {}
 
-  async acquire(): Promise<void> {
+  async acquire(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.active < this.max) {
       this.active++;
       return;
     }
-    return new Promise<void>((resolve) => {
-      this.queue.push(() => { this.active++; resolve(); });
+    return new Promise<void>((resolve, reject) => {
+      const entry = {
+        resolve: () => { this.active++; resolve(); },
+        reject,
+      };
+      this.queue.push(entry);
+      signal?.addEventListener("abort", () => {
+        const idx = this.queue.indexOf(entry);
+        if (idx !== -1) {
+          this.queue.splice(idx, 1);
+          reject(signal.reason);
+        }
+      }, { once: true });
     });
   }
 
   release(): void {
     this.active--;
     const next = this.queue.shift();
-    if (next) next();
+    if (next) next.resolve();
   }
-
-  get concurrency(): number { return this.active; }
 }
 
 let globalSemaphore: Semaphore | null = null;
@@ -326,7 +283,7 @@ function getSemaphore(): Semaphore {
 
 // ── Direct with progress tracking ─────────────────────────────────────────
 
-async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: ProgressCallback): Promise<void> {
+async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: ProgressCallback, signal?: AbortSignal): Promise<void> {
   const outputDir = buildOutputDir(plan);
   ensureDir(outputDir);
   const sem = getSemaphore();
@@ -337,78 +294,81 @@ async function downloadDirectWithProgress(plan: DownloadPlan, onProgress?: Progr
     index: i,
     filename: buildEpisodeFilename(ep),
     status: "pending" as const,
-    percent: 0,
-    downloadedMB: 0,
-    totalMB: 0,
-    speedMBps: 0,
+    percent: 0, downloadedMB: 0, totalMB: 0, speedMBps: 0,
   }));
 
   const report = (): void => onProgress?.(fileStates);
 
-  // Resolve sizes: metadata first, HEAD fallback
   await Promise.all(episodes.map(async (ep, i) => {
     const bytes = await resolveFileSize(ep.stream);
     if (bytes > 0) fileStates[i]!.totalMB = bytes / 1_048_576;
   }));
   report();
 
-  // Download each episode, acquiring a global semaphore slot
   const downloads = episodes.map(async (ep, i) => {
     const state = fileStates[i]!;
     const outputPath = join(outputDir, state.filename);
 
-    await sem.acquire();
+    try {
+      await sem.acquire(signal);
+    } catch {
+      state.status = "failed";
+      report();
+      return;
+    }
+
     state.status = "downloading";
     report();
 
-    let success = false;
     try {
-      for (let attempt = 0; attempt < 3 && !success; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        signal?.throwIfAborted();
         if (attempt > 0) {
-          state.percent = 0;
-          state.downloadedMB = 0;
-          state.speedMBps = 0;
+          state.percent = 0; state.downloadedMB = 0; state.speedMBps = 0;
           report();
           await new Promise((r) => setTimeout(r, 3000 * attempt));
         }
         try {
           await downloadFile(ep.stream.url!, outputPath, (percent, dlMB, totalMB, speed) => {
-            state.percent = percent;
-            state.downloadedMB = dlMB;
-            state.totalMB = totalMB;
-            state.speedMBps = speed;
+            state.percent = percent; state.downloadedMB = dlMB; state.totalMB = totalMB; state.speedMBps = speed;
             report();
-          });
-          state.status = "completed";
-          state.percent = 100;
-          state.speedMBps = 0;
-          success = true;
-        } catch {
-          state.percent = 0;
-          state.downloadedMB = 0;
-          state.speedMBps = 0;
+          }, signal);
+          state.status = "completed"; state.percent = 100; state.speedMBps = 0;
+          report();
+          return;
+        } catch (err) {
+          if ((err as Error).name === "AbortError") throw err;
+          state.percent = 0; state.downloadedMB = 0; state.speedMBps = 0;
         }
       }
-      if (!success) state.status = "failed";
+      state.status = "failed";
+      report();
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        state.status = "failed";
+        try { unlinkSync(outputPath); } catch { /* ok */ }
+      } else {
+        state.status = "failed";
+      }
       report();
     } finally {
       sem.release();
     }
   });
 
-  await Promise.all(downloads);
+  await Promise.allSettled(downloads);
 }
 
 export async function executeDownload(
   plan: DownloadPlan,
   backend: DownloadBackend,
   onProgress?: ProgressCallback,
+  signal?: AbortSignal,
 ): Promise<string> {
   const outputDir = buildOutputDir(plan);
-
   switch (backend) {
     case "direct":
-      await downloadDirectWithProgress(plan, onProgress);
+      await downloadDirectWithProgress(plan, onProgress, signal);
       break;
     case "debrid":
       await downloadViaDebrid(plan);
@@ -417,6 +377,5 @@ export async function executeDownload(
       await downloadViaQBittorrent(plan);
       break;
   }
-
   return outputDir;
 }
