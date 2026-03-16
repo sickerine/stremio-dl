@@ -1,6 +1,6 @@
 import { h } from "preact";
 import { memo } from "preact/compat";
-import { useRef, useCallback } from "preact/hooks";
+import { useRef, useCallback, useEffect } from "preact/hooks";
 
 interface SearchBarProps {
   onSearch: (query: string) => void;
@@ -9,6 +9,8 @@ interface SearchBarProps {
 
 export const SearchBar = memo(function SearchBar({ onSearch, loading }: SearchBarProps) {
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === "Enter" && inputRef.current) {
